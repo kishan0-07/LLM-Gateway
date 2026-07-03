@@ -10,6 +10,7 @@ def main():
     checks = [
         check("Python >= 3.13", sys.version_info[:2] >= (3, 13), sys.version.split()[0]),
         check("git", shutil.which("git") is not None),
+        check("uv", shutil.which("uv") is not None),
         check("docker", shutil.which("docker") is not None),
     ]
     for name, cmd in [("docker compose plugin", ["docker", "compose", "version"]),
@@ -20,7 +21,7 @@ def main():
         except Exception:
             checks.append(check(name, False))
     if not all(checks):
-        print("\nFAILED — fix before Session 1 next time.")
+        print("\nFAILED.")
         sys.exit(1)
     print("\nPASSED.")
 

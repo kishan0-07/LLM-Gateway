@@ -22,5 +22,18 @@ services:
       timeout: 3s
       retries: 5
 
+  app:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway_dev_pw@postgres:5432/gateway_db
+      REDIS_URL: redis://redis:6379/0
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:

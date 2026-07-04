@@ -13,11 +13,11 @@ if not api_key:
 client = Groq(api_key=api_key)
 
 MODELS = [
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
 ]
 
-PROMPT = "Explain token budgeting in exactly 3 concise sentences."
+PROMPT = "What are the seven layers of the OSI model? Explain each in one sentence."
 
 for model in MODELS:
     print(f"\n{'=' * 70}")
@@ -66,6 +66,7 @@ for model in MODELS:
             print(f"Prompt Tokens    : {usage.prompt_tokens}")
             print(f"Completion Tokens: {usage.completion_tokens}")
             print(f"Total Tokens     : {usage.total_tokens}")
+            print(f"ALL Tokens: {usage}")
         else:
             print("Usage statistics were not returned.")
 

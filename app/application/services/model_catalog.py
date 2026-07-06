@@ -7,12 +7,12 @@ class ModelInfo:
     tokenizer_hint: str
     input_per_1m: float
     output_per_1m: float
-
+    context_limit: int
 
 _CATALOG: dict[str, ModelInfo] = {
-    "openai/gpt-oss-20b": ModelInfo(provider="groq", tokenizer_hint="o200k_base", input_per_1m=0.075, output_per_1m=0.30),
-    "openai/gpt-oss-120b": ModelInfo(provider="groq", tokenizer_hint="o200k_base", input_per_1m=0.15, output_per_1m=0.60),
-    "gpt-5.4-mini": ModelInfo(provider="openai", tokenizer_hint="o200k_base", input_per_1m=0.75, output_per_1m=4.50),
+    "openai/gpt-oss-20b": ModelInfo("groq", "o200k_base", 0.075, 0.30, context_limit=131_072),
+    "openai/gpt-oss-120b": ModelInfo("groq", "o200k_base", 0.15, 0.60, context_limit=131_072),
+    "gpt-5.4-mini": ModelInfo("openai", "o200k_base", 0.75, 4.50, context_limit=400_000), 
 }
 
 
@@ -22,5 +22,6 @@ def get(model: str) -> ModelInfo:
     return _CATALOG[model]
 
 
-def allowed_models() -> list[str]:
-    return list(_CATALOG.keys())
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    info = get(model)
+    return (input_tokens / 1_000_000) * info.input_per_1m + (output_tokens / 1_000_000) * info.output_per_1m

@@ -1,8 +1,8 @@
-"""tenants api_keys budget_accounts gateway_requests budget_reservations provider_attempts usage_ledger
+"""initial schema
 
-Revision ID: f1e1702b7d81
+Revision ID: c3fca3f4f7df
 Revises: 
-Create Date: 2026-07-04 12:20:57.972230
+Create Date: 2026-07-07 00:36:46.527524
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'f1e1702b7d81'
+revision: str = 'c3fca3f4f7df'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -24,7 +24,7 @@ def upgrade() -> None:
     op.create_table('tenants',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('api_keys',
@@ -33,8 +33,8 @@ def upgrade() -> None:
     sa.Column('prefix', sa.String(), nullable=False),
     sa.Column('key_hash', sa.String(), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('last_used_at', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -44,7 +44,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('tenant_id', sa.Integer(), nullable=False),
     sa.Column('monthly_limit_usd', sa.Numeric(precision=10, scale=4), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('tenant_id')
@@ -54,7 +54,7 @@ def upgrade() -> None:
     sa.Column('tenant_id', sa.Integer(), nullable=False),
     sa.Column('trace_id', sa.String(), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -67,8 +67,8 @@ def upgrade() -> None:
     sa.Column('estimated_tokens', sa.Integer(), nullable=False),
     sa.Column('estimated_cost_usd', sa.Numeric(precision=10, scale=6), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('settled_at', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('settled_at', sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['gateway_request_id'], ['gateway_requests.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
@@ -82,7 +82,7 @@ def upgrade() -> None:
     sa.Column('attempt_number', sa.Integer(), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
     sa.Column('latency_ms', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['gateway_request_id'], ['gateway_requests.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -98,7 +98,7 @@ def upgrade() -> None:
     sa.Column('output_tokens', sa.Integer(), nullable=False),
     sa.Column('cost_usd', sa.Numeric(precision=10, scale=6), nullable=False),
     sa.Column('usage_source', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['gateway_request_id'], ['gateway_requests.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['reservation_id'], ['budget_reservations.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ondelete='CASCADE'),

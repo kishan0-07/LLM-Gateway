@@ -1,16 +1,18 @@
 from app.application.services import model_catalog
 from app.application.services.token_estimator import TokenEstimator
 from app.application.ports.budget_store import BudgetStore
+from app.application.ports.usage_ledger import UsageLedger
 from app.domain.budget import ReservationRequest, ReservationResult
 
 
 class BudgetAuthorizer:
-    def __init__(self, budget_store: BudgetStore, token_estimator: TokenEstimator):
+    def __init__(self, budget_store: BudgetStore, usage_ledger: UsageLedger, token_estimator: TokenEstimator):
         self._budget_store = budget_store
+        self._usage_ledger = usage_ledger
         self._token_estimator = token_estimator
 
     async def authorize(self, tenant_id: int, gateway_request_id: int, model: str,messages: list[dict], requested_max_tokens: int | None,) -> ReservationResult:
-        input_tokens = self._token_estimator.estimate_input_tokens(messages)
+        input_tokens = self._token_estimator.estimate_input_tokens(messages, model)  # fixed call site — now 2 args
         output_tokens = self._token_estimator.estimate_max_output_tokens(model, requested_max_tokens)
         estimated_cost_usd = model_catalog.estimate_cost_usd(model, input_tokens, output_tokens)
 
@@ -18,3 +20,11 @@ class BudgetAuthorizer:
             tenant_id=tenant_id, gateway_request_id=gateway_request_id,
             estimated_tokens=input_tokens + output_tokens, estimated_cost_usd=estimated_cost_usd,
         ))
+
+    async def settle(self, reservation_id: str, provider: str, model: str,input_tokens: int, output_tokens: int, status: str,) -> None:
+        actual_cost_usd = model_catalog.estimate_cost_usd(model, input_tokens, output_tokens)
+        await self._usage_ledger.settle(
+            reservation_id=reservation_id, provider=provider, model=model,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            actual_cost_usd=actual_cost_usd, status=status,
+        )

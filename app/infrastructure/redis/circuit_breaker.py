@@ -44,6 +44,16 @@ class CircuitBreaker:
         await pipe.execute()
 
     async def record_failure(self, provider: str, model: str) -> None:
+        state = await self._redis.get(self._key(provider, model, "state"))
+
+        # If in half_open, the trial request failed — immediately re-open
+        if state == "half_open":
+            await self._redis.set(self._key(provider, model, "state"), "open")
+            await self._redis.set(self._key(provider, model, "opened_at"), str(time.time()))
+            logger.warning("circuit_reopened_from_half_open", provider=provider, model=model)
+            return
+
+        # Normal CLOSED path - count consecutive failures
         failures_key = self._key(provider, model, "failures")
         count = await self._redis.incr(failures_key)
         await self._redis.expire(failures_key, self._recovery_timeout * 3)

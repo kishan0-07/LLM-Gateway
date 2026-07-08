@@ -1,6 +1,6 @@
 from typing import AsyncIterator
 from app.domain.provider import ProviderStreamEvent
-
+from app.application.services.budget_authorizer import BudgetAuthorizer
 
 class StreamCompletion:
     """Real implementation Days 8-9. Finalizer must settle exactly once for

@@ -1,10 +1,14 @@
 from dataclasses import dataclass
 from app.infrastructure.db.session import AsyncSessionLocal
-from app.infrastructure.db.models import GatewayRequest
+from app.infrastructure.db.models import GatewayRequest, ProviderAttempt
 from app.application.services.budget_authorizer import BudgetAuthorizer
-from app.application.ports.provider_client import ProviderClient
+from app.application.services.routing_engine import RoutingEngine
+from app.application.services.response_validator import ResponseValidator
+from app.infrastructure.redis.circuit_breaker import CircuitBreaker
 from app.application.services import model_catalog
 from app.domain.provider import ProviderResult, ProviderError
+from app.core.logging import logger
+import time
 
 
 @dataclass(frozen=True)
@@ -27,48 +31,142 @@ class CompletionResponse:
     cost_usd: float
 
 
-class ExecuteCompletion:
-    def __init__(self, budget_authorizer: BudgetAuthorizer, provider: ProviderClient):
-        self._budget_authorizer = budget_authorizer
-        self._provider = provider
+class AllProvidersFailedError(Exception):
+    """Raised when every candidate in the routing plan either failed or was circuit-broken."""
+    pass
 
-    async def execute(self, request: CompletionRequest) -> CompletionResponse:
+
+class ExecuteCompletion:
+    def __init__(
+        self,
+        budget_authorizer: BudgetAuthorizer,
+        routing_engine: RoutingEngine,
+        circuit_breaker: CircuitBreaker,
+        response_validator: ResponseValidator,
+    ):
+        self._budget_authorizer = budget_authorizer
+        self._routing_engine = routing_engine
+        self._circuit = circuit_breaker
+        self._validator = response_validator
+
+    async def execute(self, request: CompletionRequest) -> CompletionResponse:        
         gateway_request_id = await self._create_gateway_request(request)
 
         reservation = await self._budget_authorizer.authorize(
             tenant_id=request.tenant_id, gateway_request_id=gateway_request_id,
-            model=request.model, messages=request.messages, requested_max_tokens=request.max_tokens,
+            model=request.model, messages=request.messages,
+            requested_max_tokens=request.max_tokens,
         )
         if not reservation.approved:
-            raise ProviderError(provider="gateway", category="invalid_request",
-                                 message=reservation.reason or "over budget", retryable=False)
-
-        try:
-            result: ProviderResult = await self._provider.complete(request.model, request.messages)
-        except ProviderError:
-            # stopgap only — NOT the real finalizer (Days 8-9). Settles 0/0 so the reservation
-            # doesn't leak as "reserved" forever; doesn't yet handle partial usage or disconnect.
-            await self._budget_authorizer.settle(
-                reservation_id=reservation.reservation_id, provider=self._provider.metadata.name,
-                model=request.model, input_tokens=0, output_tokens=0, status="error",
+            raise ProviderError(
+                provider="gateway", category="invalid_request",
+                message=reservation.reason or "over budget", retryable=False,
             )
-            raise
+
+        candidates = self._routing_engine.plan(request.model)
+
+        last_error: Exception | None = None
+        attempt_number = 0
+
+        for candidate in candidates:
+            if not await self._circuit.is_available(candidate.provider.metadata.name, candidate.model):
+                logger.info("circuit_skipped", provider=candidate.provider.metadata.name,
+                            model=candidate.model, trace_id=request.trace_id)
+                continue
+
+            attempt_number += 1
+            attempt_id = await self._start_provider_attempt(
+                gateway_request_id=gateway_request_id,
+                provider=candidate.provider.metadata.name,
+                model=candidate.model,
+                attempt_number=attempt_number,
+            )
+            start = time.perf_counter()
+            try:
+                result: ProviderResult = await candidate.provider.complete(
+                    candidate.model, request.messages,
+                )
+            except ProviderError as exc:
+                latency_ms = int((time.perf_counter() - start) * 1000)
+                await self._finish_provider_attempt(attempt_id, status=exc.category, latency_ms=latency_ms)
+
+                if exc.category in ("timeout", "rate_limited", "server_error"):
+                    await self._circuit.record_failure(candidate.provider.metadata.name, candidate.model)
+
+                logger.warning("provider_attempt_failed", provider=candidate.provider.metadata.name,
+                               model=candidate.model, error=str(exc), trace_id=request.trace_id)
+                last_error = exc
+                continue
+
+            latency_ms = int((time.perf_counter() - start) * 1000)
+
+            if not self._validator.is_valid(result.content):
+                await self._finish_provider_attempt(attempt_id, status="invalid_output", latency_ms=latency_ms)
+                logger.warning("invalid_output_failover", provider=candidate.provider.metadata.name,
+                               model=candidate.model, trace_id=request.trace_id)
+                last_error = ProviderError(
+                    provider=candidate.provider.metadata.name,
+                    category="empty_output", message="response failed validation", retryable=False,
+                )
+                continue  
+
+            await self._circuit.record_success(candidate.provider.metadata.name, candidate.model)
+            await self._finish_provider_attempt(attempt_id, status="success", latency_ms=latency_ms)
+
+            await self._budget_authorizer.settle(
+                reservation_id=reservation.reservation_id,
+                provider=result.provider, model=result.model,
+                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                status="success",
+            )
+
+            return CompletionResponse(
+                gateway_request_id=gateway_request_id,
+                content=result.content,
+                provider=result.provider, model=result.model,
+                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                cost_usd=model_catalog.estimate_cost_usd(result.model, result.input_tokens, result.output_tokens),
+            )
 
         await self._budget_authorizer.settle(
-            reservation_id=reservation.reservation_id, provider=result.provider, model=result.model,
-            input_tokens=result.input_tokens, output_tokens=result.output_tokens, status="success",
+            reservation_id=reservation.reservation_id,
+            provider="none", model=request.model,
+            input_tokens=0, output_tokens=0, status="error",
         )
-
-        return CompletionResponse(
-            gateway_request_id=gateway_request_id, content=result.content,
-            provider=result.provider, model=result.model,
-            input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-            cost_usd=model_catalog.estimate_cost_usd(result.model, result.input_tokens, result.output_tokens),
+        raise AllProvidersFailedError(
+            f"All providers unavailable or returned invalid responses. Last error: {last_error}"
         )
 
     async def _create_gateway_request(self, request: CompletionRequest) -> int:
         async with AsyncSessionLocal() as session:
-            row = GatewayRequest(tenant_id=request.tenant_id, trace_id=request.trace_id, status="pending")
+            row = GatewayRequest(
+                tenant_id=request.tenant_id, trace_id=request.trace_id, status="pending",
+            )
             session.add(row)
             await session.commit()
-            return row.id  # populated by flush's RETURNING, expire_on_commit=False keeps it readable — no refresh() needed
+            return row.id
+
+    async def _start_provider_attempt(
+        self, gateway_request_id: int, provider: str, model: str, attempt_number: int,
+    ) -> int:
+        async with AsyncSessionLocal() as session:
+            attempt = ProviderAttempt(
+                gateway_request_id=gateway_request_id,
+                provider=provider, model=model,
+                attempt_number=attempt_number, status="in_progress",
+            )
+            session.add(attempt)
+            await session.commit()
+            return attempt.id
+
+    async def _finish_provider_attempt(
+        self, attempt_id: int, status: str, latency_ms: int,
+    ) -> None:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import update
+            await session.execute(
+                update(ProviderAttempt)
+                .where(ProviderAttempt.id == attempt_id)
+                .values(status=status, latency_ms=latency_ms)
+            )
+            await session.commit()

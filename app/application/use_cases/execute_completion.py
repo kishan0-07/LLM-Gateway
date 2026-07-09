@@ -4,10 +4,14 @@ from app.infrastructure.db.models import GatewayRequest, ProviderAttempt
 from app.application.services.budget_authorizer import BudgetAuthorizer
 from app.application.services.routing_engine import RoutingEngine
 from app.application.services.response_validator import ResponseValidator
+from app.application.services.sanitizer import sanitize
 from app.infrastructure.redis.circuit_breaker import CircuitBreaker
+from app.application.ports.rate_limiter import RateLimiter
+from app.application.ports.event_sink import EventSink
 from app.application.services import model_catalog
 from app.domain.provider import ProviderResult, ProviderError
 from app.core.logging import logger
+from sqlalchemy import update
 import time
 
 
@@ -43,21 +47,28 @@ class ExecuteCompletion:
         routing_engine: RoutingEngine,
         circuit_breaker: CircuitBreaker,
         response_validator: ResponseValidator,
+        rate_limiter: RateLimiter,
+        event_sink: EventSink,
     ):
         self._budget_authorizer = budget_authorizer
         self._routing_engine = routing_engine
         self._circuit = circuit_breaker
         self._validator = response_validator
+        self._rate_limiter = rate_limiter
+        self._event_sink = event_sink
 
-    async def execute(self, request: CompletionRequest) -> CompletionResponse:        
+    async def execute(self, request: CompletionRequest) -> CompletionResponse:
         gateway_request_id = await self._create_gateway_request(request)
 
+        await self._rate_limiter.check(request.tenant_id, 0)
+        
         reservation = await self._budget_authorizer.authorize(
             tenant_id=request.tenant_id, gateway_request_id=gateway_request_id,
             model=request.model, messages=request.messages,
             requested_max_tokens=request.max_tokens,
         )
         if not reservation.approved:
+            await self._update_gateway_request_status(gateway_request_id, "budget_rejected")
             raise ProviderError(
                 provider="gateway", category="invalid_request",
                 message=reservation.reason or "over budget", retryable=False,
@@ -81,6 +92,7 @@ class ExecuteCompletion:
                 model=candidate.model,
                 attempt_number=attempt_number,
             )
+
             start = time.perf_counter()
             try:
                 result: ProviderResult = await candidate.provider.complete(
@@ -108,7 +120,7 @@ class ExecuteCompletion:
                     provider=candidate.provider.metadata.name,
                     category="empty_output", message="response failed validation", retryable=False,
                 )
-                continue  
+                continue
 
             await self._circuit.record_success(candidate.provider.metadata.name, candidate.model)
             await self._finish_provider_attempt(attempt_id, status="success", latency_ms=latency_ms)
@@ -120,12 +132,27 @@ class ExecuteCompletion:
                 status="success",
             )
 
+            cost_usd = model_catalog.estimate_cost_usd(result.model, result.input_tokens, result.output_tokens)
+
+            await self._update_gateway_request_status(gateway_request_id, "completed")
+
+            await self._emit_event(
+                event_type="request_completed",
+                trace_id=request.trace_id, tenant_id=request.tenant_id,
+                gateway_request_id=gateway_request_id,
+                provider=result.provider, model=result.model,
+                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                cost_usd=cost_usd,
+                prompt_excerpt=request.messages[-1].get("content", "") if request.messages else "",
+                response_excerpt=result.content,
+            )
+
             return CompletionResponse(
                 gateway_request_id=gateway_request_id,
                 content=result.content,
                 provider=result.provider, model=result.model,
                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-                cost_usd=model_catalog.estimate_cost_usd(result.model, result.input_tokens, result.output_tokens),
+                cost_usd=cost_usd,
             )
 
         await self._budget_authorizer.settle(
@@ -133,9 +160,43 @@ class ExecuteCompletion:
             provider="none", model=request.model,
             input_tokens=0, output_tokens=0, status="error",
         )
+        await self._update_gateway_request_status(gateway_request_id, "failed")
+
+        await self._emit_event(
+            event_type="request_failed",
+            trace_id=request.trace_id, tenant_id=request.tenant_id,
+            gateway_request_id=gateway_request_id,
+            provider="none", model=request.model,
+            input_tokens=0, output_tokens=0, cost_usd=0.0,
+            prompt_excerpt=request.messages[-1].get("content", "") if request.messages else "",
+            response_excerpt="",
+            error=str(last_error),
+        )
+
         raise AllProvidersFailedError(
             f"All providers unavailable or returned invalid responses. Last error: {last_error}"
         )
+
+    async def _emit_event(self, event_type: str, trace_id: str, tenant_id: int,
+                          gateway_request_id: int, provider: str, model: str,
+                          input_tokens: int, output_tokens: int, cost_usd: float,
+                          prompt_excerpt: str, response_excerpt: str, **extra) -> None:
+        """Build a sanitized event dict and emit through the event sink."""
+        event = {
+            "event": event_type,
+            "trace_id": trace_id,
+            "tenant_id": tenant_id,
+            "request_id": gateway_request_id,
+            "provider": provider,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": f"{cost_usd:.6f}",
+            "prompt_excerpt": sanitize(prompt_excerpt),
+            "response_excerpt": sanitize(response_excerpt),
+            **extra,
+        }
+        await self._event_sink.emit(event)
 
     async def _create_gateway_request(self, request: CompletionRequest) -> int:
         async with AsyncSessionLocal() as session:
@@ -146,9 +207,17 @@ class ExecuteCompletion:
             await session.commit()
             return row.id
 
+    async def _update_gateway_request_status(self, gateway_request_id: int, status: str) -> None:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(GatewayRequest)
+                .where(GatewayRequest.id == gateway_request_id)
+                .values(status=status)
+            )
+            await session.commit()
+
     async def _start_provider_attempt(
-        self, gateway_request_id: int, provider: str, model: str, attempt_number: int,
-    ) -> int:
+        self, gateway_request_id: int, provider: str, model: str, attempt_number: int,) -> int:
         async with AsyncSessionLocal() as session:
             attempt = ProviderAttempt(
                 gateway_request_id=gateway_request_id,
@@ -160,10 +229,8 @@ class ExecuteCompletion:
             return attempt.id
 
     async def _finish_provider_attempt(
-        self, attempt_id: int, status: str, latency_ms: int,
-    ) -> None:
+        self, attempt_id: int, status: str, latency_ms: int,) -> None:
         async with AsyncSessionLocal() as session:
-            from sqlalchemy import update
             await session.execute(
                 update(ProviderAttempt)
                 .where(ProviderAttempt.id == attempt_id)

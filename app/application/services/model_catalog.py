@@ -26,3 +26,6 @@ def get(model: str) -> ModelInfo:
 def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     info = get(model)
     return (input_tokens / 1_000_000) * info.input_per_1m + (output_tokens / 1_000_000) * info.output_per_1m
+
+def all_models() -> dict[str, ModelInfo]:
+    return dict(_CATALOG)

@@ -1,13 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from app.api.middleware import TraceIDMiddleware
-from app.api.routes import health
-from fastapi import Depends
+from app.api.routes import health, completions
 from app.api.deps import get_principal
 from app.domain.auth import Principal
 
 app = FastAPI(title="LLM Gateway")
 app.add_middleware(TraceIDMiddleware)
 app.include_router(health.router)
+app.include_router(completions.router)
 
 @app.get("/whoami")
 async def whoami(principal: Principal = Depends(get_principal)):

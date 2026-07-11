@@ -11,7 +11,7 @@ METADATA = ProviderMetadata(
     pricing={"mock-model": {"input_per_1m": 0.0, "output_per_1m": 0.0}},
 )
 
-Mode = Literal["success", "timeout", "error", "empty", "stream_delta"]
+Mode = Literal["success", "timeout", "error", "empty", "stream_delta" , "stream_error"]
 
 
 class MockProvider(BaseProvider):
@@ -20,7 +20,7 @@ class MockProvider(BaseProvider):
     def __init__(self, mode: Mode = "success"):
         self.mode = mode
 
-    async def complete(self, model: str, messages: list[dict]) -> ProviderResult:
+    async def complete(self, model: str, messages: list[dict], *, max_tokens: int) -> ProviderResult:
         if self.mode == "timeout":
             raise self._wrap_error("timeout", "mock forced timeout", retryable=True)
         if self.mode == "error":
@@ -33,11 +33,16 @@ class MockProvider(BaseProvider):
             input_tokens=10, output_tokens=5, usage_source="actual", latency_ms=1,
         )
 
-    async def stream(self, model: str, messages: list[dict]) -> AsyncIterator[ProviderStreamEvent]:
-        if self.mode != "stream_delta":
-            raise self._wrap_error("invalid_request", "MockProvider only streams in stream_delta mode", retryable=False)
-        for chunk in ["mock ", "stream ", "content"]:
-            await asyncio.sleep(0)  
-            yield ProviderStreamEvent(type="delta", content=chunk)
-        yield ProviderStreamEvent(type="usage", input_tokens=10, output_tokens=5)
-        yield ProviderStreamEvent(type="done")
+    async def stream(self, model: str, messages: list[dict], *, max_tokens: int) -> AsyncIterator[ProviderStreamEvent]:
+        if self.mode == "stream_error":
+            yield ProviderStreamEvent(type="delta", content="partial ")
+            yield ProviderStreamEvent(type="error", content="timeout: mock forced timeout")
+            return
+        if self.mode == "stream_delta":
+            for chunk in ["mock ", "stream ", "content"]:
+                await asyncio.sleep(0)  
+                yield ProviderStreamEvent(type="delta", content=chunk)
+            yield ProviderStreamEvent(type="usage", input_tokens=10, output_tokens=5)
+            yield ProviderStreamEvent(type="done")
+            return
+        raise self._wrap_error("invalid_request", "unsupported mock stream mode", retryable=False)

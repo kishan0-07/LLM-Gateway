@@ -65,11 +65,16 @@ class ExecuteCompletion:
         gateway_request_id = await self._create_gateway_request(request)
 
         await self._rate_limiter.check(request.tenant_id, 0)
-        
+        try:
+            output_cap = self._budget_authorizer._token_estimator.output_cap(request.messages, request.model, request.max_tokens)
+        except ValueError as exc:
+            await self._update_gateway_request_status(gateway_request_id, "failed")
+            raise ProviderError(provider="gateway", category="invalid_request", message=str(exc), retryable=False)  
+              
         reservation = await self._budget_authorizer.authorize(
             tenant_id=request.tenant_id, gateway_request_id=gateway_request_id,
             model=request.model, messages=request.messages,
-            requested_max_tokens=request.max_tokens,
+            requested_max_tokens=output_cap,
         )
         if not reservation.approved:
             await self._update_gateway_request_status(gateway_request_id, "budget_rejected")
@@ -100,7 +105,7 @@ class ExecuteCompletion:
             start = time.perf_counter()
             try:
                 result: ProviderResult = await candidate.provider.complete(
-                    candidate.model, request.messages,
+                    candidate.model, request.messages,max_tokens=output_cap,
                 )
             except ProviderError as exc:
                 latency_ms = int((time.perf_counter() - start) * 1000)

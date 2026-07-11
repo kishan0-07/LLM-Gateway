@@ -1,10 +1,10 @@
-import json
+import json ,asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from app.api.schemas.completion import (
     CompletionCreateRequest, CompletionCreateResponse, UsageResponse,
 )
-from app.api.deps import get_principal, get_execute_completion, get_stream_completion
+from app.api.deps import get_principal, get_completion_use_cases , CompletionUseCases
 from app.domain.auth import Principal
 from app.domain.provider import ProviderError
 from app.application.use_cases.execute_completion import (
@@ -21,17 +21,16 @@ async def create_completion(
     body: CompletionCreateRequest,
     request: Request,
     principal: Principal = Depends(get_principal),
-    use_case: ExecuteCompletion = Depends(get_execute_completion),
-    stream_use_case: StreamCompletion = Depends(get_stream_completion),
+    use_cases: CompletionUseCases = Depends(get_completion_use_cases),
 ):
     trace_id = request.scope.get("state", {}).get("trace_id", "unknown")
 
     if body.stream:
-        return _stream_response(body, principal, stream_use_case, trace_id)
+        return _stream_response(body, principal, use_cases.stream, trace_id)
 
     # --- Non-streaming path (unchanged from Day 7) ---
     try:
-        result = await use_case.execute(CompletionRequest(
+        result = await use_cases.execute.execute(CompletionRequest(
             tenant_id=principal.tenant_id,
             trace_id=trace_id,
             model=body.model,
@@ -72,27 +71,26 @@ def _stream_response(
                 tenant_id=principal.tenant_id,
                 trace_id=trace_id,
                 model=body.model,
-                messages=[m.model_dump() for m in body.messages],
+                messages=[message.model_dump() for message in body.messages],
                 max_tokens=body.max_tokens,
             )):
                 if event.type == "done":
-                    yield "data: [DONE]\n\n"
-                else:
-                    # Serialize ProviderStreamEvent to JSON
-                    payload = {"type": event.type}
-                    if event.content is not None:
-                        payload["content"] = event.content
-                    if event.input_tokens is not None:
-                        payload["input_tokens"] = event.input_tokens
-                    if event.output_tokens is not None:
-                        payload["output_tokens"] = event.output_tokens
-                    yield f"data: {json.dumps(payload)}\n\n"
+                    continue # Do not yield [DONE] here!
+
+                payload = {"type": event.type}
+                if event.content is not None: payload["content"] = event.content
+                if event.input_tokens is not None: payload["input_tokens"] = event.input_tokens
+                if event.output_tokens is not None: payload["output_tokens"] = event.output_tokens
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        except asyncio.CancelledError:
+            # Client disconnected
+            raise
         except Exception:
-            # Safety net — should not reach here because StreamCompletion
-            # catches all exceptions internally. But if something escapes,
-            # yield an error and close cleanly.
-            yield 'data: {"type": "error", "content": "internal_stream_error"}\n\n'
-            yield "data: [DONE]\n\n"
+            yield 'data: {"type":"error","content":"internal_stream_error"}\n\n'
+
+        # This runs safely after StreamCompletion has settled the database
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),

@@ -22,10 +22,10 @@ class OpenAIProvider(BaseProvider):
     def __init__(self, api_key: str):
         self._client = AsyncOpenAI(api_key=api_key)
 
-    async def complete(self, model: str, messages: list[dict]) -> ProviderResult:
+    async def complete(self, model: str, messages: list[dict], *, max_tokens: int) -> ProviderResult:
         start = time.perf_counter()
         try:
-            response = await self._client.chat.completions.create(model=model, messages=messages)
+            response = await self._client.chat.completions.create(model=model, messages=messages , max_completion_tokens=max_tokens)
         except APITimeoutError as exc:
             raise self._wrap_error("timeout", str(exc), retryable=True) from exc
         except RateLimitError as exc:
@@ -50,11 +50,12 @@ class OpenAIProvider(BaseProvider):
             latency_ms=latency_ms,
         )
 
-    async def stream(self, model: str, messages: list[dict]) -> AsyncIterator[ProviderStreamEvent]:
+    async def stream(self, model: str, messages: list[dict], *, max_tokens: int) -> AsyncIterator[ProviderStreamEvent]:
         try:
             stream = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
+                max_completion_tokens=max_tokens,
                 stream=True,
                 stream_options={"include_usage": True},
             )

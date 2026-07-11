@@ -1,7 +1,7 @@
 import tiktoken
 from app.application.services import model_catalog
 
-
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
 class TokenEstimator:
     def __init__(self):
         self._tokenizer_cache = {}
@@ -35,3 +35,12 @@ class TokenEstimator:
         if requested_max_tokens is not None:
             return min(requested_max_tokens, info.context_limit)
         return min(1024, info.context_limit)
+    def output_cap(self, messages: list[dict], model: str, requested: int | None) -> int:
+        info = model_catalog.get(model)
+        input_tokens = self.estimate_input_tokens(messages, model)
+        remaining_context = max(0, info.context_limit - input_tokens)
+        requested_or_default = requested if requested is not None else DEFAULT_MAX_OUTPUT_TOKENS
+        cap = min(requested_or_default, remaining_context)
+        if cap < 1:
+            raise ValueError("input exceeds the model context window")
+        return cap

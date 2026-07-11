@@ -89,16 +89,27 @@ class RedisBudgetStore:
             await self._redis.incrby(f"budget:{tenant_id}:used", delta_micros)
 
     async def expire_stale_once(self) -> int:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=RESERVATION_TTL_SECONDS)
+        releases: list[tuple[int, int]] = []
+
         async with AsyncSessionLocal() as session:
-            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=RESERVATION_TTL_SECONDS)
             result = await session.execute(
-                select(BudgetReservation).where(
+                select(BudgetReservation)
+                .where(
                     BudgetReservation.status == "reserved",
                     BudgetReservation.created_at < cutoff,
                 )
+                .with_for_update(skip_locked=True)
             )
-            stale = result.scalars().all()
-            for r in stale:
-                r.status = "expired"
+            for reservation in result.scalars():
+                reservation.status = "expired"
+                reservation.settled_at = datetime.datetime.now(datetime.timezone.utc)
+                releases.append((
+                    reservation.tenant_id,
+                    round(float(reservation.estimated_cost_usd) * MICROS_PER_DOLLAR),
+                ))
             await session.commit()
-            return len(stale)
+
+        for tenant_id, estimated_micros in releases:
+            await self._redis.decrby(f"budget:{tenant_id}:used", estimated_micros)
+        return len(releases)

@@ -28,3 +28,10 @@ class BudgetAuthorizer:
             input_tokens=input_tokens, output_tokens=output_tokens,
             actual_cost_usd=actual_cost_usd, status=status,
         )
+
+    async def remaining_usd(self, tenant_id: int) -> float:
+
+        try:
+            return await self._budget_store.remaining_usd(tenant_id)
+        except Exception:
+            return 999999.0 

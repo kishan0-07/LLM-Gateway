@@ -58,6 +58,10 @@ class ExecuteCompletion:
         self._event_sink = event_sink
 
     async def execute(self, request: CompletionRequest) -> CompletionResponse:
+        try:
+            model_catalog.get(request.model)
+        except KeyError as exc:
+            raise ProviderError(provider="gateway", category="invalid_request", message=str(exc), retryable=False)
         gateway_request_id = await self._create_gateway_request(request)
 
         await self._rate_limiter.check(request.tenant_id, 0)

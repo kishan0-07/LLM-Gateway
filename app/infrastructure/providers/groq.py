@@ -1,7 +1,8 @@
 import time
+from typing import AsyncIterator
 from groq import AsyncGroq
 from groq import APITimeoutError, RateLimitError, APIConnectionError, APIStatusError
-from app.domain.provider import ProviderResult
+from app.domain.provider import ProviderResult , ProviderStreamEvent
 from app.infrastructure.providers.base import BaseProvider, ProviderMetadata
 
 METADATA = ProviderMetadata(
@@ -50,5 +51,37 @@ class GroqProvider(BaseProvider):
             latency_ms=latency_ms,
         )
 
-    def stream(self, model: str, messages: list[dict]):
-        raise NotImplementedError("real streaming lands Days 8-9 — signature only today")
+    async def stream(self, model: str, messages: list[dict]) -> AsyncIterator[ProviderStreamEvent]:
+        try:
+            stream = await self._client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True,
+            )
+            async for chunk in stream:
+                # Usage chunk (final) — carries actual token counts
+                if chunk.usage:
+                    yield ProviderStreamEvent(
+                        type="usage",
+                        input_tokens=chunk.usage.prompt_tokens,
+                        output_tokens=chunk.usage.completion_tokens,
+                    )
+                    continue
+
+                # Content delta
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield ProviderStreamEvent(
+                        type="delta",
+                        content=chunk.choices[0].delta.content,
+                    )
+
+            yield ProviderStreamEvent(type="done")
+
+        except APITimeoutError as exc:
+            yield ProviderStreamEvent(type="error", content=f"timeout: {exc}")
+        except RateLimitError as exc:
+            yield ProviderStreamEvent(type="error", content=f"rate_limited: {exc}")
+        except APIConnectionError as exc:
+            yield ProviderStreamEvent(type="error", content=f"timeout: {exc}")
+        except APIStatusError as exc:
+            yield ProviderStreamEvent(type="error", content=f"server_error: {exc}")

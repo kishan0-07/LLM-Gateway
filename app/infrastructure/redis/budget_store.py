@@ -113,3 +113,17 @@ class RedisBudgetStore:
         for tenant_id, estimated_micros in releases:
             await self._redis.decrby(f"budget:{tenant_id}:used", estimated_micros)
         return len(releases)
+
+    async def remaining_usd(self, tenant_id: int) -> float:
+        async with AsyncSessionLocal() as session:
+            account = (
+                await session.execute(
+                    select(BudgetAccount).where(BudgetAccount.tenant_id == tenant_id)
+                )
+            ).scalar_one()
+
+        limit_micros = round(float(account.monthly_limit_usd) * MICROS_PER_DOLLAR)
+        used_raw = await self._redis.get(f"budget:{tenant_id}:used")
+        used_micros = int(used_raw) if used_raw is not None else 0
+        remaining_micros = max(0, limit_micros - used_micros)
+        return remaining_micros / MICROS_PER_DOLLAR

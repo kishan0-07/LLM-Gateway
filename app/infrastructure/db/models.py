@@ -1,7 +1,7 @@
 import datetime
 import decimal
 import uuid
-from sqlalchemy import ForeignKey, Numeric, Index, func , DateTime
+from sqlalchemy import ForeignKey, Numeric, Index, func , DateTime , Boolean , false
 from sqlalchemy.orm import Mapped, mapped_column
 from app.infrastructure.db.session import Base
 
@@ -39,10 +39,26 @@ class GatewayRequest(Base):
     __tablename__ = "gateway_requests"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    api_key_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="RESTRICT"),
+        index=True,
+        nullable=True,
+    )
     trace_id: Mapped[str] = mapped_column(index=True)
     status: Mapped[str] = mapped_column(default="pending")
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True),server_default=func.now())
+    is_stream: Mapped[bool] = mapped_column(
+        Boolean,
+        server_default=false(),
+        nullable=False,
+    )
+    gateway_overhead_ms: Mapped[int | None] = mapped_column(default=None)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
 
 
 class BudgetReservation(Base):

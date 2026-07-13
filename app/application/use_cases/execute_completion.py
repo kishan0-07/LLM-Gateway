@@ -6,7 +6,7 @@ from app.application.services.routing_engine import RoutingEngine
 from app.application.services.response_validator import ResponseValidator
 from app.application.services.sanitizer import sanitize
 from app.infrastructure.redis.circuit_breaker import CircuitBreaker
-from app.application.ports.rate_limiter import RateLimiter
+from app.application.ports.rate_limiter import RateLimiter , RateLimitExceeded, RateLimitBackendUnavailable
 from app.application.ports.event_sink import EventSink
 from app.application.services import model_catalog
 from app.domain.provider import ProviderResult, ProviderError
@@ -18,6 +18,7 @@ import time
 @dataclass(frozen=True)
 class CompletionRequest:
     tenant_id: int
+    api_key_id: int
     trace_id: str
     model: str
     messages: list[dict]
@@ -62,9 +63,24 @@ class ExecuteCompletion:
             model_catalog.get(request.model)
         except KeyError as exc:
             raise ProviderError(provider="gateway", category="invalid_request", message=str(exc), retryable=False)
+        
+        started_at = time.perf_counter()
+        provider_latency_ms_total = 0
+
         gateway_request_id = await self._create_gateway_request(request)
 
-        await self._rate_limiter.check(request.tenant_id, 0)
+        try:
+            await self._rate_limiter.check(request.tenant_id, request.api_key_id)
+        except RateLimitExceeded:
+            await self._update_gateway_request_status(gateway_request_id, "rate_limited")
+            raise
+        except RateLimitBackendUnavailable:
+            await self._update_gateway_request_status(
+                gateway_request_id,
+                "rate_limit_unavailable",
+            )
+            raise
+
         try:
             output_cap = self._budget_authorizer._token_estimator.output_cap(request.messages, request.model, request.max_tokens)
         except ValueError as exc:
@@ -109,6 +125,7 @@ class ExecuteCompletion:
                 )
             except ProviderError as exc:
                 latency_ms = int((time.perf_counter() - start) * 1000)
+                provider_latency_ms_total += latency_ms
                 await self._finish_provider_attempt(attempt_id, status=exc.category, latency_ms=latency_ms)
 
                 if exc.category in ("timeout", "rate_limited", "server_error"):
@@ -120,6 +137,7 @@ class ExecuteCompletion:
                 continue
 
             latency_ms = int((time.perf_counter() - start) * 1000)
+            provider_latency_ms_total += latency_ms
 
             if not self._validator.is_valid(result.content):
                 await self._finish_provider_attempt(attempt_id, status="invalid_output", latency_ms=latency_ms)
@@ -142,8 +160,12 @@ class ExecuteCompletion:
             )
 
             cost_usd = model_catalog.estimate_cost_usd(result.model, result.input_tokens, result.output_tokens)
-
-            await self._update_gateway_request_status(gateway_request_id, "completed")
+            gateway_overhead_ms = max(
+                0,
+                int((time.perf_counter() - started_at) * 1000)
+                - provider_latency_ms_total,
+            )
+            await self._update_gateway_request_status(gateway_request_id, "completed" , gateway_overhead_ms=gateway_overhead_ms,)
 
             await self._emit_event(
                 event_type="request_completed",
@@ -210,18 +232,32 @@ class ExecuteCompletion:
     async def _create_gateway_request(self, request: CompletionRequest) -> int:
         async with AsyncSessionLocal() as session:
             row = GatewayRequest(
-                tenant_id=request.tenant_id, trace_id=request.trace_id, status="pending",
+                tenant_id=request.tenant_id,
+                api_key_id=request.api_key_id,
+                trace_id=request.trace_id,
+                status="pending",
+                is_stream=False,
             )
             session.add(row)
             await session.commit()
             return row.id
 
-    async def _update_gateway_request_status(self, gateway_request_id: int, status: str) -> None:
+    async def _update_gateway_request_status(
+        self,
+        gateway_request_id: int,
+        status: str,
+        *,
+        gateway_overhead_ms: int | None = None,
+    ) -> None:
+        values: dict[str, object] = {"status": status}
+        if gateway_overhead_ms is not None:
+            values["gateway_overhead_ms"] = gateway_overhead_ms
+
         async with AsyncSessionLocal() as session:
             await session.execute(
                 update(GatewayRequest)
                 .where(GatewayRequest.id == gateway_request_id)
-                .values(status=status)
+                .values(**values)
             )
             await session.commit()
 

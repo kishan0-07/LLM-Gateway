@@ -36,7 +36,7 @@ def get_completion_use_cases() -> CompletionUseCases:
     from app.infrastructure.providers.openai import OpenAIProvider
     from app.infrastructure.redis.budget_store import RedisBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
-    from app.infrastructure.redis.rate_limiter import PermissiveRateLimiter
+    from app.infrastructure.redis.rate_limiter import RedisRateLimiter
     from app.infrastructure.observability.event_logger import LogEventSink
     from app.application.services.budget_authorizer import BudgetAuthorizer
     from app.application.services.token_estimator import TokenEstimator
@@ -58,7 +58,7 @@ def get_completion_use_cases() -> CompletionUseCases:
     )
     routing = RoutingEngine(providers=providers)
     circuit = CircuitBreaker()
-    rate_limiter = PermissiveRateLimiter()
+    rate_limiter =RedisRateLimiter()
     event_sink = LogEventSink()
     validator = ResponseValidator()
 

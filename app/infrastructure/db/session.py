@@ -15,3 +15,7 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
+
+async def close_database() -> None:
+    """Dispose the shared SQLAlchemy engine during application shutdown."""
+    await engine.dispose()

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     rate_limit_tenant_requests: int = 120
     rate_limit_api_key_requests: int = 60
     rate_limit_redis_failure_mode: Literal["fail_open", "fail_closed"] = "fail_open"
-
-
+    reservation_reconcile_interval_seconds: int = 60
+    shutdown_grace_seconds: int = 10
+    
 settings = Settings()

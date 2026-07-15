@@ -16,13 +16,27 @@ from app.application.ports.rate_limiter import RateLimitExceeded, RateLimitBacke
 
 router = APIRouter()
 
+def _api_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+        headers=headers,
+    )
+
+
 def _http_error_for_provider_error(exc: ProviderError) -> HTTPException:
     if exc.category != "invalid_request":
-        return HTTPException(status_code=502, detail=str(exc))
+        return _api_error(502, "provider_unavailable", str(exc))
 
     if "over budget" in exc.message or "over_budget" in exc.message:
-        return HTTPException(status_code=429, detail=exc.message)
-    return HTTPException(status_code=400, detail=exc.message)
+        return _api_error(429, "budget_exceeded", exc.message)
+    return _api_error(400, "invalid_request", exc.message)
 
 @router.post("/v1/chat/completions")
 async def create_completion(
@@ -46,23 +60,25 @@ async def create_completion(
             max_tokens=body.max_tokens,
         ))
     except RateLimitExceeded as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="rate limit exceeded",
+        raise _api_error(
+            429,
+            "rate_limited",
+            "Rate limit exceeded",
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
     except RateLimitBackendUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="rate limiter temporarily unavailable",
+        raise _api_error(
+            503,
+            "rate_limiter_unavailable",
+            "Rate limiter temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
     except ProviderError as exc:
         raise _http_error_for_provider_error(exc) from exc
     except AllProvidersFailedError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise _api_error(502, "provider_unavailable", str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise _api_error(400, "invalid_request", str(exc)) from exc
 
     return CompletionCreateResponse(
         gateway_request_id=result.gateway_request_id,
@@ -95,15 +111,17 @@ async def _prepare_stream_response(
             )
         )
     except RateLimitExceeded as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="rate limit exceeded",
+        raise _api_error(
+            429,
+            "rate_limited",
+            "Rate limit exceeded",
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
     except RateLimitBackendUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="rate limiter temporarily unavailable",
+        raise _api_error(
+            503,
+            "rate_limiter_unavailable",
+            "Rate limiter temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
     except ProviderError as exc:

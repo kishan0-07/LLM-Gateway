@@ -22,4 +22,7 @@ class TraceIDMiddleware:
                 message.setdefault("headers", []).append((b"x-trace-id", trace_id.encode()))
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            structlog.contextvars.clear_contextvars()

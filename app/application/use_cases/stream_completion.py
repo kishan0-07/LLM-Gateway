@@ -16,7 +16,7 @@ from app.application.services import model_catalog
 from app.domain.provider import ProviderStreamEvent, ProviderError
 from app.core.logging import logger
 from sqlalchemy import update
-
+from app.application.ports.budget_store import BudgetBackendUnavailable
 
 @dataclass(frozen=True)
 class StreamRequest:
@@ -93,13 +93,20 @@ class StreamCompletion:
                 retryable=False,
             ) from exc
 
-        reservation = await self._budget_authorizer.authorize(
-            tenant_id=request.tenant_id,
-            gateway_request_id=gateway_request_id,
-            model=request.model,
-            messages=request.messages,
-            requested_max_tokens=output_cap,
-        )
+        try:
+            reservation = await self._budget_authorizer.authorize(
+                tenant_id=request.tenant_id,
+                gateway_request_id=gateway_request_id,
+                model=request.model,
+                messages=request.messages,
+                requested_max_tokens=output_cap,
+            )
+        except BudgetBackendUnavailable:
+            await self._update_gateway_request_status(
+                gateway_request_id,
+                "budget_backend_unavailable",
+            )
+            raise
         if not reservation.approved:
             await self._update_gateway_request_status(
                 gateway_request_id,

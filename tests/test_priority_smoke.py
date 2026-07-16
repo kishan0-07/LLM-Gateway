@@ -41,8 +41,8 @@ async def reservation_status_for_request(gateway_request_id: int) -> str:
         return res.status if res else None
 
 
-def _make_use_cases(mock_provider, *, rate_limiter=None):
-    """Helper to wire up CompletionUseCases with a given provider instance."""
+def _make_use_cases(mock_provider, *, rate_limiter=None, budget_store=None):
+
     from app.api.deps import CompletionUseCases
     from app.infrastructure.redis.budget_store import RedisBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
@@ -55,9 +55,9 @@ def _make_use_cases(mock_provider, *, rate_limiter=None):
     from app.application.use_cases.execute_completion import ExecuteCompletion
     from app.application.use_cases.stream_completion import StreamCompletion
 
-    budget_store = RedisBudgetStore()
+    store = budget_store or RedisBudgetStore()
     token_estimator = TokenEstimator()
-    budget_authorizer = BudgetAuthorizer(budget_store, budget_store, token_estimator)
+    budget_authorizer = BudgetAuthorizer(store, store, token_estimator)
     routing = RoutingEngine(providers={
         "mock": mock_provider,
         "groq": mock_provider,
@@ -331,8 +331,9 @@ async def test_7_all_providers_unavailable(test_env):
 
     app.dependency_overrides.clear()
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
+    assert response.json()["error"]["trace_id"] == trace_id
 
     req = await latest_request_for_trace(trace_id)
     res_status = await reservation_status_for_request(req.id)
@@ -451,3 +452,51 @@ async def test_10_database_unavailable_before_provider(test_env):
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_error"
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_budget_backend_unavailable_before_provider(test_env):
+    from app.infrastructure.providers.mock import MockProvider
+    from app.api.deps import get_completion_use_cases
+    from app.application.ports.budget_store import BudgetBackendUnavailable
+    
+    class UnavailableBudgetStore:
+        async def try_reserve(self, request):
+            raise BudgetBackendUnavailable()
+        async def settle(self, *args, **kwargs):
+            raise AssertionError("settle must not run without a reservation")
+        async def remaining_usd(self, tenant_id: int) -> float:
+            raise AssertionError("streaming was not entered")
+        async def expire_stale_once(self) -> int:
+            return 0
+
+    mock_provider = MockProvider(mode="success")
+    use_cases = _make_use_cases(
+        mock_provider,
+        budget_store=UnavailableBudgetStore(),
+    )
+    app.dependency_overrides[get_completion_use_cases] = lambda: use_cases
+
+    with patch.object(mock_provider, "complete", wraps=mock_provider.complete) as spy:
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.4-mini",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": "test-budget-fail-closed"},
+                )
+
+            assert response.status_code == 503
+            assert response.json()["error"]["code"] == "budget_backend_unavailable"
+            
+            # Assert no provider calls
+            assert spy.call_count == 0
+            
+            req = await latest_request_for_trace("test-budget-fail-closed")
+            assert req.status == "budget_backend_unavailable"
+        finally:
+            app.dependency_overrides.clear()

@@ -9,6 +9,15 @@ from app.domain.budget import ReservationRequest
 from app.infrastructure.db.models import BudgetReservation, BudgetAccount, UsageLedger
 
 
+async def create_gateway_request_for_test(test_env, trace_id: str) -> int:
+    from app.infrastructure.db.models import GatewayRequest
+    from app.infrastructure.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        req = GatewayRequest(tenant_id=test_env["tenant_id"], api_key_id=test_env.get("api_key_id"), trace_id=trace_id)
+        session.add(req)
+        await session.commit()
+        return req.id
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_reservation_creates_postgres_row(test_env):
@@ -280,3 +289,42 @@ async def test_concurrent_reservations_no_double_spend(test_env):
     approved_count = sum(1 for r in results if r.approved)
 
     assert approved_count == 10, f"Expected 10 approvals, got {approved_count}"
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_settlement_increases_counter_when_actual_cost_exceeds_estimate(test_env):
+    from app.infrastructure.redis.budget_store import RedisBudgetStore
+    from app.domain.budget import ReservationRequest
+    from app.infrastructure.redis.client import get_redis
+
+    store = RedisBudgetStore()
+    redis_client = get_redis()
+    key = f"budget:{test_env['tenant_id']}:used"
+    await redis_client.delete(key)
+
+    gateway_request_id = await create_gateway_request_for_test(
+        test_env,
+        trace_id="under-estimate-true-up",
+    )
+    reservation = await store.try_reserve(ReservationRequest(
+        tenant_id=test_env["tenant_id"],
+        gateway_request_id=gateway_request_id,
+        estimated_tokens=10,
+        estimated_cost_usd=0.001,
+    ))
+    assert reservation.approved
+
+    used_after_reserve = int(await redis_client.get(key) or 0)
+
+    await store.settle(
+        reservation_id=reservation.reservation_id,
+        provider="mock",
+        model="mock-model",
+        input_tokens=100,
+        output_tokens=100,
+        actual_cost_usd=0.003,
+        status="success",
+    )
+
+    used_after_settle = int(await redis_client.get(key) or 0)
+    assert used_after_settle > used_after_reserve

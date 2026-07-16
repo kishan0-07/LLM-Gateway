@@ -14,6 +14,7 @@ from app.application.use_cases.execute_completion import (
 from app.application.use_cases.stream_completion import PreparedStream , StreamCompletion , StreamRequest
 from starlette.requests import Request
 from app.application.ports.rate_limiter import RateLimitExceeded, RateLimitBackendUnavailable
+from app.application.ports.budget_store import BudgetBackendUnavailable
 
 router = APIRouter()
 
@@ -74,10 +75,21 @@ async def create_completion(
             "Rate limiter temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
+    except BudgetBackendUnavailable as exc:
+        raise _api_error(
+            503,
+            "budget_backend_unavailable",
+            "Budget authorization is temporarily unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
     except ProviderError as exc:
         raise _http_error_for_provider_error(exc) from exc
     except AllProvidersFailedError as exc:
-        raise _api_error(502, "provider_unavailable", str(exc)) from exc
+        raise _api_error(
+            503,
+            "provider_unavailable",
+            "All configured providers are currently unavailable",
+        ) from exc
     except KeyError as exc:
         raise _api_error(400, "invalid_request", str(exc)) from exc
 
@@ -123,6 +135,13 @@ async def _prepare_stream_response(
             503,
             "rate_limiter_unavailable",
             "Rate limiter temporarily unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
+    except BudgetBackendUnavailable as exc:
+        raise _api_error(
+            503,
+            "budget_backend_unavailable",
+            "Budget authorization is temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
     except ProviderError as exc:

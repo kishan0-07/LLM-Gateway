@@ -5,6 +5,9 @@ from app.domain.budget import ReservationRequest, ReservationResult
 from app.infrastructure.db.session import AsyncSessionLocal
 from app.infrastructure.db.models import BudgetReservation, BudgetAccount, UsageLedger
 from app.infrastructure.redis.client import get_redis
+from redis.exceptions import RedisError
+from app.application.ports.budget_store import BudgetBackendUnavailable
+from app.core.logging import logger
 
 MICROS_PER_DOLLAR = 1_000_000
 RESERVATION_TTL_SECONDS = 3600  # safety-net self-heal window, NOT the billing period — Postgres created_at is the real boundary
@@ -36,9 +39,19 @@ class RedisBudgetStore:
             requested_micros = round(request.estimated_cost_usd * MICROS_PER_DOLLAR)
             limit_micros = round(float(account.monthly_limit_usd) * MICROS_PER_DOLLAR)
 
-            approved = await self._reserve_script(
-                keys=[key], args=[requested_micros, limit_micros, RESERVATION_TTL_SECONDS],
-            )
+            try:
+                approved = await self._reserve_script(
+                    keys=[key],
+                    args=[requested_micros, limit_micros, RESERVATION_TTL_SECONDS],
+                )
+            except RedisError as exc:
+                logger.error(
+                    "budget_backend_unavailable",
+                    tenant_id=request.tenant_id,
+                    gateway_request_id=request.gateway_request_id,
+                    error_type=type(exc).__name__,
+                )
+                raise BudgetBackendUnavailable() from exc
             if not approved:
                 return ReservationResult(approved=False, reservation_id=None, reason="over_budget")
 

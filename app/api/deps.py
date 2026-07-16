@@ -56,8 +56,10 @@ def get_completion_use_cases() -> CompletionUseCases:
     from app.application.use_cases.stream_completion import StreamCompletion
 
     providers = {}
-    if settings.groq_api_key: providers["groq"] = GroqProvider(api_key=settings.groq_api_key)
-    if settings.openai_api_key: providers["openai"] = OpenAIProvider(api_key=settings.openai_api_key)
+    if settings.groq_api_key: 
+        providers["groq"] = GroqProvider(api_key=settings.groq_api_key)
+    if settings.openai_api_key: 
+        providers["openai"] = OpenAIProvider(api_key=settings.openai_api_key)
 
     budget_store = RedisBudgetStore()
     token_estimator = TokenEstimator()

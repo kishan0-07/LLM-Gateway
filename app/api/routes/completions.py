@@ -1,4 +1,5 @@
-import json ,asyncio
+import json
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from app.api.schemas.completion import (
@@ -8,7 +9,7 @@ from app.api.deps import get_principal, get_completion_use_cases , CompletionUse
 from app.domain.auth import Principal
 from app.domain.provider import ProviderError
 from app.application.use_cases.execute_completion import (
-    ExecuteCompletion, CompletionRequest, AllProvidersFailedError,
+    CompletionRequest, AllProvidersFailedError,
 )
 from app.application.use_cases.stream_completion import PreparedStream , StreamCompletion , StreamRequest
 from starlette.requests import Request

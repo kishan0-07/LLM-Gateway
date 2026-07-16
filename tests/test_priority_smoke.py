@@ -1,15 +1,14 @@
 import pytest
 import asyncio
-import json
 from dataclasses import replace as dataclass_replace
 from decimal import Decimal
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select, update
 from app.main import app
 from app.infrastructure.db.session import AsyncSessionLocal
-from app.infrastructure.db.models import GatewayRequest, ProviderAttempt, BudgetAccount, Tenant
-from app.domain.provider import ProviderResult, ProviderStreamEvent, ProviderError
+from app.infrastructure.db.models import GatewayRequest, ProviderAttempt, BudgetAccount
+from app.domain.provider import ProviderStreamEvent
 
 
 # --- Reusable assertion helpers ---

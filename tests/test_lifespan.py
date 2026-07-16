@@ -1,10 +1,21 @@
-from fastapi.testclient import TestClient
+import pytest
+from httpx import ASGITransport, AsyncClient
+
 from app.main import app
 
 
-def test_lifespan_starts_and_stops_reconciler() -> None:
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
+@pytest.mark.asyncio
+async def test_lifespan_starts_and_stops_reconciler() -> None:
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/health")
+
+        assert response.status_code == 200
         task = app.state.reservation_reconciler_task
         assert not task.done()
 

@@ -18,6 +18,7 @@ from app.infrastructure.db.session import close_database
 from app.infrastructure.redis.budget_store import RedisBudgetStore
 from app.infrastructure.redis.client import close_redis
 from app.workers.reservation_reconciler import ReservationReconciler
+from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,7 +50,8 @@ async def lifespan(app: FastAPI):
             reconciler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconciler_task
-
+                
+        await shutdown_langfuse()
         await close_redis()
         await close_database()
         logger.info("shutdown_complete")

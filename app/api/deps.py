@@ -10,6 +10,14 @@ from dataclasses import dataclass
 from app.application.use_cases.execute_completion import ExecuteCompletion
 from app.application.use_cases.stream_completion import StreamCompletion
 
+from functools import lru_cache
+from app.infrastructure.observability.event_logger import LogEventSink
+from app.infrastructure.observability.event_sinks import CompositeEventSink
+from app.infrastructure.observability.langfuse_sink import (
+    LangfuseEventSink,
+    get_langfuse_client,
+)
+
 async def get_principal(x_api_key: str | None = Header(None, alias="X-API-Key"),db: AsyncSession = Depends(get_db),) -> Principal:
     if x_api_key is None:
         raise HTTPException(
@@ -41,13 +49,21 @@ class CompletionUseCases:
     execute: ExecuteCompletion
     stream: StreamCompletion
 
+@lru_cache
+def get_event_sink():
+    sinks = [LogEventSink()]
+    langfuse_client = get_langfuse_client()
+    if langfuse_client is not None:
+        sinks.append(LangfuseEventSink(langfuse_client))
+    return CompositeEventSink(*sinks)
+
+
 def get_completion_use_cases() -> CompletionUseCases:
     from app.infrastructure.providers.groq import GroqProvider
     from app.infrastructure.providers.openai import OpenAIProvider
     from app.infrastructure.redis.budget_store import RedisBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
     from app.infrastructure.redis.rate_limiter import RedisRateLimiter
-    from app.infrastructure.observability.event_logger import LogEventSink
     from app.application.services.budget_authorizer import BudgetAuthorizer
     from app.application.services.token_estimator import TokenEstimator
     from app.application.services.routing_engine import RoutingEngine
@@ -71,7 +87,7 @@ def get_completion_use_cases() -> CompletionUseCases:
     routing = RoutingEngine(providers=providers)
     circuit = CircuitBreaker()
     rate_limiter =RedisRateLimiter()
-    event_sink = LogEventSink()
+    event_sink = get_event_sink()
     validator = ResponseValidator()
 
     return CompletionUseCases(

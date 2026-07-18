@@ -35,6 +35,8 @@ class PreparedStream:
     output_cap: int
     candidates: list[RouteCandidate]
 
+DEFAULT_STREAM_TIMEOUT_SECONDS = 30.0
+
 class StreamCompletion:
     def __init__(
         self,
@@ -45,7 +47,12 @@ class StreamCompletion:
         rate_limiter: RateLimiter,
         event_sink: EventSink,
         token_estimator: TokenEstimator,
-    ):
+        *,
+        stream_timeout_seconds: float = DEFAULT_STREAM_TIMEOUT_SECONDS,
+    ) -> None:
+        if stream_timeout_seconds <= 0:
+            raise ValueError("stream timeout must be positive")
+
         self._budget_authorizer = budget_authorizer
         self._routing_engine = routing_engine
         self._circuit = circuit_breaker
@@ -53,6 +60,7 @@ class StreamCompletion:
         self._rate_limiter = rate_limiter
         self._event_sink = event_sink
         self._token_estimator = token_estimator
+        self._stream_timeout_seconds = stream_timeout_seconds
 
     async def prepare(self, request: StreamRequest) -> PreparedStream:
         try:
@@ -176,7 +184,7 @@ class StreamCompletion:
             start = time.perf_counter()
 
             try:
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(self._stream_timeout_seconds):
                     async for event in candidate.provider.stream(candidate.model, request.messages , max_tokens=output_cap):
                         if event.type == "delta":
                             accumulated_text += event.content or ""

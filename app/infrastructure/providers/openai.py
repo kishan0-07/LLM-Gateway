@@ -3,7 +3,7 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 from openai import APITimeoutError, RateLimitError, APIConnectionError, APIStatusError
 from app.domain.provider import ProviderResult , ProviderStreamEvent
-from app.infrastructure.providers.base import BaseProvider, ProviderMetadata
+from app.infrastructure.providers.base import BaseProvider, ProviderMetadata , ProviderError
 
 METADATA = ProviderMetadata(
     name="openai",
@@ -22,10 +22,19 @@ class OpenAIProvider(BaseProvider):
     def __init__(self, api_key: str):
         self._client = AsyncOpenAI(api_key=api_key)
 
+    def _status_error(self, exc: APIStatusError) -> ProviderError:
+        if exc.status_code in {400, 404, 422}:
+            return self._wrap_error("invalid_request", str(exc), retryable=False)
+        return self._wrap_error("server_error", str(exc), retryable=exc.status_code >= 500)
+
     async def complete(self, model: str, messages: list[dict], *, max_tokens: int) -> ProviderResult:
         start = time.perf_counter()
         try:
-            response = await self._client.chat.completions.create(model=model, messages=messages , max_completion_tokens=max_tokens)
+            response = await self._client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_completion_tokens=max_tokens,
+            )
         except APITimeoutError as exc:
             raise self._wrap_error("timeout", str(exc), retryable=True) from exc
         except RateLimitError as exc:
@@ -33,7 +42,7 @@ class OpenAIProvider(BaseProvider):
         except APIConnectionError as exc:
             raise self._wrap_error("timeout", str(exc), retryable=True) from exc
         except APIStatusError as exc:
-            raise self._wrap_error("server_error", str(exc), retryable=exc.status_code >= 500) from exc
+            raise self._status_error(exc) from exc
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         choice = response.choices[0]
@@ -83,4 +92,5 @@ class OpenAIProvider(BaseProvider):
         except APIConnectionError as exc:
             yield ProviderStreamEvent(type="error", content=f"timeout: {exc}")
         except APIStatusError as exc:
-            yield ProviderStreamEvent(type="error", content=f"server_error: {exc}")
+            category = "invalid_request" if exc.status_code in {400, 404, 422} else "server_error"
+            yield ProviderStreamEvent(type="error", content=f"{category}: {exc}")

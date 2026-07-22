@@ -176,7 +176,6 @@ async def test_3_budget_exhausted_before_provider(test_env, mock_gateway):
 async def test_4_budget_exhausted_mid_stream(test_env):
     from app.infrastructure.providers.mock import MockProvider
     from app.api.deps import get_completion_use_cases
-    from app.infrastructure.redis.client import get_redis
 
     class BudgetDrainMockProvider(MockProvider):
         async def stream(self, model: str, messages: list[dict], *, max_tokens: int):

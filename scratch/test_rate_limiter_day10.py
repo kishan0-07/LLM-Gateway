@@ -1,5 +1,4 @@
 import asyncio
-import time
 from app.infrastructure.redis.rate_limiter import RedisRateLimiter
 from app.application.ports.rate_limiter import RateLimitExceeded, RateLimitBackendUnavailable
 from app.infrastructure.redis.client import get_redis

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
-import shutil, subprocess, sys
+import shutil
+import subprocess
+import sys
 
 def check(label, passed, detail=""):
     print(f"{'pass' if passed else 'failed'} {label}{': ' + detail if detail else ''}")

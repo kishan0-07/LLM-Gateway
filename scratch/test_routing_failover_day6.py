@@ -1,16 +1,14 @@
 import asyncio
 from app.infrastructure.providers.mock import MockProvider
-from app.application.services.routing_engine import RoutingEngine, RouteCandidate
+from app.application.services.routing_engine import RoutingEngine
 from app.application.services.response_validator import ResponseValidator
 from app.infrastructure.redis.circuit_breaker import CircuitBreaker
 from app.application.services.budget_authorizer import BudgetAuthorizer
 from app.application.services.token_estimator import TokenEstimator
 from app.infrastructure.redis.budget_store import RedisBudgetStore
-from app.application.use_cases.execute_completion import ExecuteCompletion, CompletionRequest, AllProvidersFailedError
+from app.application.use_cases.execute_completion import ExecuteCompletion, CompletionRequest
 from app.infrastructure.db.session import AsyncSessionLocal
 from app.infrastructure.db.models import Tenant, BudgetAccount
-from app.application.services import model_catalog
-from sqlalchemy import select
 
 
 async def setup_tenant(limit_usd: float) -> int:
@@ -39,16 +37,7 @@ async def main():
     routing = RoutingEngine(providers=providers)
     cb = CircuitBreaker(failure_threshold=3, recovery_timeout=60)
     validator = ResponseValidator()
-
-    # We need mock-model in ModelCatalog for this to work
-    # It's already there from Day 3's MockProvider setup? No — ModelCatalog only has groq/openai models.
-    # Workaround: test with a model that IS in the catalog, using real provider names
-    # OR add mock-model temporarily. Let's test the routing plan itself first:
-    candidates = routing.plan("mock-model")
-    # This will raise KeyError because mock-model isn't in ModelCatalog
-    # That's actually correct behavior — the routing engine needs catalog entries.
-
-    # So let's test the REAL flow: Groq fails → OpenAI fallback
+    
     groq_failing = MockProvider(mode="error")
     groq_failing.metadata = type(groq_failing.metadata)(
         name="groq", models=["openai/gpt-oss-20b"],

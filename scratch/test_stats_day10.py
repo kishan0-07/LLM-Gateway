@@ -1,9 +1,5 @@
 import asyncio
 from decimal import Decimal
-import datetime
-from sqlalchemy import select
-from app.infrastructure.db.session import AsyncSessionLocal
-from app.infrastructure.db.models import GatewayRequest, UsageLedger, ProviderAttempt
 from app.infrastructure.db.stats_reader import SQLAlchemyStatsReader
 
 async def test_stats_query():

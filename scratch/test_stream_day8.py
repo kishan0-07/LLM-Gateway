@@ -77,7 +77,7 @@ async def test_provider_error_raised():
 
     assert any(e.type == "error" for e in events), "Expected an error event from except path"
     print(" Test 2 (provider raises exception) passed")
-    print(f"  This tested the 'except Exception' path, NOT the 'yield error event' path")
+    print("  This tested the 'except Exception' path, NOT the 'yield error event' path")
     print()
 
 

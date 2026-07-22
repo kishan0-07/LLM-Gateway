@@ -46,6 +46,11 @@ class RecordingBudgetAuthorizer:
     async def remaining_usd(self, tenant_id):
         return self.remaining
 
+    async def assert_provisional_stream_usage_within_reservation(self, **kwargs):
+        if self.remaining <= 0:
+            from app.application.ports.budget_store import BudgetExceededMidStream
+            raise BudgetExceededMidStream("Mid-stream budget exceeded")
+
 
 class RecordingCircuit:
     def __init__(self, available=True):
@@ -181,7 +186,7 @@ async def test_missing_usage_falls_back_to_estimate():
     budget = RecordingBudgetAuthorizer()
     use_case = build_stream_use_case(budget=budget, circuit=RecordingCircuit(), events=CapturingEventSink())
     
-    stream_events = [event async for event in use_case.stream(prepared(provider))]
+    _ = [event async for event in use_case.stream(prepared(provider))]
     
     assert budget.settlements[0]["input_tokens"] == 7
     assert budget.settlements[0]["output_tokens"] == 11  # len("hello world")

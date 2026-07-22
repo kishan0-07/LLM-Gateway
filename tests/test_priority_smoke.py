@@ -180,16 +180,8 @@ async def test_4_budget_exhausted_mid_stream(test_env):
 
     class BudgetDrainMockProvider(MockProvider):
         async def stream(self, model: str, messages: list[dict], *, max_tokens: int):
-            # Yield some initial content
-            yield ProviderStreamEvent(type="delta", content="token " * 10)
-            await asyncio.sleep(0.01)
-
-            # Drain this tenant's budget by setting used amount absurdly high
-            r = get_redis()
-            await r.set(f"budget:{test_env['tenant_id']}:used", 999999000000)
-
-            # Yield more content to cross the 100-token budget check threshold
-            for _ in range(12):
+            # Yield enough content to cross the 100-token threshold and exceed max_tokens
+            for _ in range(15):
                 yield ProviderStreamEvent(type="delta", content="token " * 10)
                 await asyncio.sleep(0.01)
 
@@ -206,6 +198,7 @@ async def test_4_budget_exhausted_mid_stream(test_env):
             "model": "gpt-5.4-mini",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": True,
+            "max_tokens": 50,
         }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
 
     app.dependency_overrides.clear()
@@ -450,8 +443,8 @@ async def test_10_database_unavailable_before_provider(test_env):
 
     app.dependency_overrides.clear()
 
-    assert response.status_code == 500
-    assert response.json()["error"]["code"] == "internal_error"
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "database_unavailable"
 
 @pytest.mark.integration
 @pytest.mark.asyncio

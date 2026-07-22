@@ -1,7 +1,7 @@
 import datetime
 import decimal
 import uuid
-from sqlalchemy import ForeignKey, Numeric, Index, func , DateTime , Boolean , false
+from sqlalchemy import ForeignKey, Numeric, Index, func , DateTime , Boolean , false , text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.infrastructure.db.session import Base
 
@@ -72,7 +72,28 @@ class BudgetReservation(Base):
     status: Mapped[str] = mapped_column(default="reserved")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True),server_default=func.now())
     settled_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True),default=None)
+    cache_sync_required: Mapped[bool] = mapped_column(
+        Boolean,
+        server_default=false(),
+        nullable=False,
+    )
+    reconciliation_state: Mapped[str] = mapped_column(
+        default="none",
+        server_default=text("'none'"),
+        nullable=False,
+    )
+    reconciliation_reason: Mapped[str | None] = mapped_column(
+        default=None,
+        nullable=True,
+    )
 
+    __table_args__ = (
+        Index(
+            "ix_budget_reservations_reconciliation",
+            "reconciliation_state",
+            "created_at",
+        ),
+    )
 
 class ProviderAttempt(Base):
     __tablename__ = "provider_attempts"

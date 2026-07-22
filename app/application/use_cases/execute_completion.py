@@ -12,7 +12,7 @@ from app.application.services import model_catalog
 from app.domain.provider import ProviderResult, ProviderError
 from app.core.logging import logger
 from sqlalchemy import update
-from app.application.ports.budget_store import BudgetBackendUnavailable
+from app.application.ports.budget_store import BudgetBackendUnavailable , DatabaseUnavailable
 import time
 
 
@@ -68,7 +68,10 @@ class ExecuteCompletion:
         started_at = time.perf_counter()
         provider_latency_ms_total = 0
 
-        gateway_request_id = await self._create_gateway_request(request)
+        try:
+            gateway_request_id = await self._create_gateway_request(request)
+        except Exception as exc:
+            raise DatabaseUnavailable() from exc
 
         try:
             await self._rate_limiter.check(request.tenant_id, request.api_key_id)
@@ -108,6 +111,9 @@ class ExecuteCompletion:
                 provider="gateway", category="invalid_request",
                 message=reservation.reason or "over budget", retryable=False,
             )
+
+        if reservation.reservation_id is None:
+            raise RuntimeError("Approved reservation is missing an ID")
 
         candidates = self._routing_engine.plan(request.model)
 

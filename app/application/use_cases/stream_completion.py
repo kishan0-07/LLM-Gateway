@@ -16,7 +16,9 @@ from app.application.services import model_catalog
 from app.domain.provider import ProviderStreamEvent, ProviderError
 from app.core.logging import logger
 from sqlalchemy import update
-from app.application.ports.budget_store import BudgetBackendUnavailable
+from app.application.ports.budget_store import (
+    BudgetBackendUnavailable, DatabaseUnavailable, BudgetExceededMidStream
+)
 
 @dataclass(frozen=True)
 class StreamRequest:
@@ -73,7 +75,11 @@ class StreamCompletion:
                 retryable=False,
             ) from exc
 
-        gateway_request_id = await self._create_gateway_request(request)
+        try:
+            gateway_request_id = await self._create_gateway_request(request)
+        except Exception as exc:
+            raise DatabaseUnavailable() from exc
+        
         try:
             await self._rate_limiter.check(request.tenant_id, request.api_key_id)
         except RateLimitExceeded:
@@ -126,6 +132,9 @@ class StreamCompletion:
                 message=reservation.reason or "over budget",
                 retryable=False,
             )
+
+        if reservation.reservation_id is None:
+            raise RuntimeError("Approved reservation is missing an ID")
 
         candidates = self._routing_engine.plan(request.model)
         if not candidates:
@@ -197,10 +206,20 @@ class StreamCompletion:
 
                             if approx_output_tokens >= next_budget_check_at:
                                 next_budget_check_at += 100
-                                remaining = await self._budget_authorizer.remaining_usd(request.tenant_id)
-                                if remaining <= 0:
+                                try:
+                                    await self._budget_authorizer.assert_provisional_stream_usage_within_reservation(
+                                        reservation_id=reservation_id,
+                                        model=candidate.model,
+                                        messages=request.messages,
+                                        accumulated_text=accumulated_text,
+                                    )
+                                except BudgetExceededMidStream:
                                     final_status = "budget_exceeded"
                                     yield ProviderStreamEvent(type="error", content="budget_exceeded_mid_stream")
+                                    return
+                                except BudgetBackendUnavailable:
+                                    final_status = "budget_backend_unavailable"
+                                    yield ProviderStreamEvent(type="error", content="budget_backend_unavailable_mid_stream")
                                     return
 
                         elif event.type == "usage":
@@ -373,8 +392,15 @@ class StreamCompletion:
             )
             if final_status == "success":
                 await self._circuit.record_success(provider, model)
-        except Exception:
-            await self._mark_needs_reconciliation(reservation_id, gateway_request_id)
+        except Exception as exc:
+            logger.error("stream_settlement_failed", reservation_id=reservation_id, error=str(exc))
+            try:
+                await self._budget_authorizer._budget_store.mark_needs_reconciliation(
+                    reservation_id=reservation_id,
+                    reason="settlement_failed_after_provider_attempt",
+                )
+            except Exception:
+                pass
             raise
         else:
             await self._update_gateway_request_status(

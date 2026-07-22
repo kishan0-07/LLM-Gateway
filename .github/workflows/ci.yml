@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-and-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway_dev_pw
+          POSTGRES_DB: gateway_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway_db"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway_dev_pw@127.0.0.1:5432/gateway_db
+      REDIS_URL: redis://127.0.0.1:6379/0
+      GROQ_API_KEY: ci-not-a-real-key
+      OPENAI_API_KEY: ci-not-a-real-key
+      LANGFUSE_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check app tests scripts scratch
+
+      - name: Type-check gateway policy core
+        run: uv run mypy app/domain app/application/ports app/application/services app/application/use_cases
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        run: uv run pytest tests -q

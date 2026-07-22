@@ -58,7 +58,7 @@ async def test_reservation_creates_postgres_row(test_env):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_reservation_rejected_when_over_budget(test_env):
-
+    from app.infrastructure.redis.budget_store import budget_counter_key
     # Set budget to $0
     async with AsyncSessionLocal() as session:
         await session.execute(
@@ -69,7 +69,7 @@ async def test_reservation_rejected_when_over_budget(test_env):
         await session.commit()
 
     r = get_redis()
-    await r.delete(f"budget:{test_env['tenant_id']}:used")
+    await r.delete(budget_counter_key(test_env['tenant_id']))
 
     store = RedisBudgetStore()
     from app.infrastructure.db.models import GatewayRequest
@@ -149,9 +149,10 @@ async def test_settlement_is_idempotent(test_env):
 @pytest.mark.asyncio
 async def test_settlement_corrects_redis_counter(test_env):
     """Settlement must true-up the Redis counter when actual cost differs from estimated."""
+    from app.infrastructure.redis.budget_store import budget_counter_key
     store = RedisBudgetStore()
     r = get_redis()
-    await r.delete(f"budget:{test_env['tenant_id']}:used")
+    await r.delete(budget_counter_key(test_env['tenant_id']))
 
     from app.infrastructure.db.models import GatewayRequest
     async with AsyncSessionLocal() as session:
@@ -177,7 +178,7 @@ async def test_settlement_corrects_redis_counter(test_env):
     ))
     assert result.approved
 
-    used_after_reserve = int(await r.get(f"budget:{test_env['tenant_id']}:used") or 0)
+    used_after_reserve = int(await r.get(budget_counter_key(test_env['tenant_id'])) or 0)
 
     await store.settle(
         reservation_id=result.reservation_id,
@@ -186,7 +187,7 @@ async def test_settlement_corrects_redis_counter(test_env):
         actual_cost_usd=actual_cost, status="success",
     )
 
-    used_after_settle = int(await r.get(f"budget:{test_env['tenant_id']}:used") or 0)
+    used_after_settle = int(await r.get(budget_counter_key(test_env['tenant_id'])) or 0)
 
     # After settlement, the Redis counter should have decreased (true-up refund)
     assert used_after_settle < used_after_reserve
@@ -197,9 +198,10 @@ async def test_settlement_corrects_redis_counter(test_env):
 async def test_stale_reservation_expiry(test_env):
 
     import datetime
+    from app.infrastructure.redis.budget_store import budget_counter_key
     store = RedisBudgetStore()
     r = get_redis()
-    await r.delete(f"budget:{test_env['tenant_id']}:used")
+    await r.delete(budget_counter_key(test_env['tenant_id']))
 
     from app.infrastructure.db.models import GatewayRequest
     async with AsyncSessionLocal() as session:
@@ -230,7 +232,7 @@ async def test_stale_reservation_expiry(test_env):
         res.created_at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
         await session.commit()
 
-    used_before = int(await r.get(f"budget:{test_env['tenant_id']}:used") or 0)
+    used_before = int(await r.get(budget_counter_key(test_env['tenant_id'])) or 0)
 
     # Run reconciler
     expired_count = await store.expire_stale_once()
@@ -243,7 +245,7 @@ async def test_stale_reservation_expiry(test_env):
         )).scalar_one()
         assert res.status == "expired"
 
-    used_after = int(await r.get(f"budget:{test_env['tenant_id']}:used") or 0)
+    used_after = int(await r.get(budget_counter_key(test_env['tenant_id'])) or 0)
     assert used_after < used_before
 
 
@@ -251,9 +253,10 @@ async def test_stale_reservation_expiry(test_env):
 @pytest.mark.asyncio
 async def test_concurrent_reservations_no_double_spend(test_env):
     """100 concurrent reservations against a $0.10 budget must not overspend."""
+    from app.infrastructure.redis.budget_store import budget_counter_key
     store = RedisBudgetStore()
     r = get_redis()
-    await r.delete(f"budget:{test_env['tenant_id']}:used")
+    await r.delete(budget_counter_key(test_env['tenant_id']))
 
     async with AsyncSessionLocal() as session:
         await session.execute(
@@ -293,13 +296,13 @@ async def test_concurrent_reservations_no_double_spend(test_env):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_settlement_increases_counter_when_actual_cost_exceeds_estimate(test_env):
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
+    from app.infrastructure.redis.budget_store import RedisBudgetStore, budget_counter_key
     from app.domain.budget import ReservationRequest
     from app.infrastructure.redis.client import get_redis
 
     store = RedisBudgetStore()
     redis_client = get_redis()
-    key = f"budget:{test_env['tenant_id']}:used"
+    key = budget_counter_key(test_env['tenant_id'])
     await redis_client.delete(key)
 
     gateway_request_id = await create_gateway_request_for_test(

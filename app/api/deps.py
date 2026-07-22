@@ -28,10 +28,18 @@ async def get_principal(x_api_key: str | None = Header(None, alias="X-API-Key"),
             },
         )
     key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
-    result = await db.execute(
-        select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.status == "active")
-    )
-    api_key = result.scalar_one_or_none()
+    try:
+        result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.status == "active"))
+        api_key = result.scalar_one_or_none()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "database_unavailable",
+                "message": "Database temporarily unavailable",
+            },
+        ) from exc
+    
     if api_key is None:
         raise HTTPException(
             status_code=401,

@@ -14,7 +14,7 @@ from app.application.use_cases.execute_completion import (
 from app.application.use_cases.stream_completion import PreparedStream , StreamCompletion , StreamRequest
 from starlette.requests import Request
 from app.application.ports.rate_limiter import RateLimitExceeded, RateLimitBackendUnavailable
-from app.application.ports.budget_store import BudgetBackendUnavailable
+from app.application.ports.budget_store import BudgetBackendUnavailable , DatabaseUnavailable
 
 router = APIRouter()
 
@@ -92,6 +92,14 @@ async def create_completion(
         ) from exc
     except KeyError as exc:
         raise _api_error(400, "invalid_request", str(exc)) from exc
+    
+    except DatabaseUnavailable as exc:
+        raise _api_error(
+            503,
+            "database_unavailable",
+            "Database temporarily unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
 
     return CompletionCreateResponse(
         gateway_request_id=result.gateway_request_id,
@@ -146,6 +154,14 @@ async def _prepare_stream_response(
         ) from exc
     except ProviderError as exc:
         raise _http_error_for_provider_error(exc) from exc
+    
+    except DatabaseUnavailable as exc:
+        raise _api_error(
+            503,
+            "database_unavailable",
+            "Database temporarily unavailable",
+            headers={"Retry-After": "1"},   
+        ) from exc
 
     return _stream_response(stream_use_case, prepared, trace_id)
 

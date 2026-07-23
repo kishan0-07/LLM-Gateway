@@ -77,6 +77,7 @@ async def test_retry_after_is_positive(test_env):
     assert exc_info.value.retry_after_seconds >= 1
     assert isinstance(exc_info.value.retry_after_seconds, int)
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_tenant_limit_is_shared_across_different_api_keys(test_env):
@@ -132,12 +133,12 @@ async def test_key_limit_does_not_throttle_sibling_key(test_env):
         tenant_limit=10,
         api_key_limit=1,
     )
-    
+
     # key_one consumes its limit and gets throttled
     await limiter.check(tenant_id, key_one)
     with pytest.raises(RateLimitExceeded):
         await limiter.check(tenant_id, key_one)
-        
+
     # key_two belongs to a sibling api key and is unthrottled
     await limiter.check(tenant_id, key_two)
 

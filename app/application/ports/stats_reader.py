@@ -26,5 +26,4 @@ class StatsReader(Protocol):
         *,
         tenant_id: int,
         api_key_id: int | None,
-    ) -> UsageStatsSummary:
-        ...
+    ) -> UsageStatsSummary: ...

@@ -7,6 +7,7 @@ from app.infrastructure.observability.langfuse_sink import (
     shutdown_langfuse,
 )
 
+
 class FakeObservation:
     def __init__(self):
         self.updates = []
@@ -51,7 +52,7 @@ async def test_langfuse_sink_disabled_returns_none_client():
 async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
     client = FakeLangfuseClient()
     sink = LangfuseEventSink(client)
-    
+
     event = {
         "event": "request_completed",
         "model": "gpt-5.4-mini",
@@ -64,18 +65,20 @@ async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
         "usage_source": "actual",
         "input_tokens": 10,
         "output_tokens": 15,
-        "cost_usd": "0.000120"
+        "cost_usd": "0.000120",
     }
 
     await sink.emit(event)
-    
+
     assert len(client.observations) == 1
     metadata, obs = client.observations[0]
     assert metadata["as_type"] == "generation"
     assert metadata["model"] == "gpt-5.4-mini"
-    
+
     updates = obs.updates[0]
-    assert updates["input"] == {"prompt_excerpt": "Contact [EMAIL] instead of jane@example.com"}
+    assert updates["input"] == {
+        "prompt_excerpt": "Contact [EMAIL] instead of jane@example.com"
+    }
     assert updates["output"] == {"response_excerpt": "Hello [PHONE]"}
     assert updates["metadata"]["gatewayTraceId"] == "trace-123"
     assert updates["usage_details"] == {"input": 10, "output": 15}
@@ -86,9 +89,9 @@ async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
 async def test_langfuse_sink_failure_is_isolated():
     client = FakeLangfuseClient(should_fail=True)
     sink = LangfuseEventSink(client)
-    
+
     event = {"event": "request_completed"}
-    
+
     # Sinks should swallow exceptions safely so client completion is not interrupted
     await sink.emit(event)
 
@@ -97,6 +100,9 @@ async def test_langfuse_sink_failure_is_isolated():
 async def test_langfuse_shutdown_flushes_once():
     client = FakeLangfuseClient()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("app.infrastructure.observability.langfuse_sink.get_langfuse_client", lambda: client)
+        mp.setattr(
+            "app.infrastructure.observability.langfuse_sink.get_langfuse_client",
+            lambda: client,
+        )
         await shutdown_langfuse()
         assert client.shutdown_called

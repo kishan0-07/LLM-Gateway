@@ -36,14 +36,12 @@ for model in MODELS:
                 }
             ],
             stream=True,
-            
         )
 
         full_response = ""
         usage = None
 
         for chunk in stream:
-
             if (
                 chunk.choices
                 and chunk.choices[0].delta

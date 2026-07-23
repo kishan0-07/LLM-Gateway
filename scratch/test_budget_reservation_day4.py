@@ -29,7 +29,9 @@ async def test_concurrent_reserve():
 
     used_micros = int(await get_redis().get(f"budget:{tenant_id}:used") or 0)
     expected = round(approved * per_call_cost * 1_000_000)
-    assert used_micros == expected, f"drift: redis={used_micros} expected={expected} — double-spend or lost increment"
+    assert used_micros == expected, (
+        f"drift: redis={used_micros} expected={expected} — double-spend or lost increment"
+    )
     assert used_micros <= round(0.01 * 1_000_000), "counter exceeded the actual limit"
     print("NO DOUBLE-SPEND CONFIRMED")
     return results
@@ -37,14 +39,28 @@ async def test_concurrent_reserve():
 
 async def test_idempotent_settlement(store: RedisBudgetStore, reservation_id: str):
     await asyncio.gather(
-        store.settle(reservation_id, "groq", "openai/gpt-oss-20b", 50, 20, 0.0001, "success"),
-        store.settle(reservation_id, "groq", "openai/gpt-oss-20b", 50, 20, 0.0001, "success"),
+        store.settle(
+            reservation_id, "groq", "openai/gpt-oss-20b", 50, 20, 0.0001, "success"
+        ),
+        store.settle(
+            reservation_id, "groq", "openai/gpt-oss-20b", 50, 20, 0.0001, "success"
+        ),
     )
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            select(UsageLedger).where(UsageLedger.reservation_id == reservation_id)
-        )).scalars().all()
-    assert len(rows) == 1, f"expected 1 ledger row, got {len(rows)} — settlement is NOT idempotent"
+        rows = (
+            (
+                await session.execute(
+                    select(UsageLedger).where(
+                        UsageLedger.reservation_id == reservation_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1, (
+        f"expected 1 ledger row, got {len(rows)} — settlement is NOT idempotent"
+    )
     print("IDEMPOTENT SETTLEMENT CONFIRMED")
 
 

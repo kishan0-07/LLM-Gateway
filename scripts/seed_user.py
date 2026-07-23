@@ -12,9 +12,16 @@ async def seed():
     async with AsyncSessionLocal() as session:
         tenant = Tenant(name="dev-tenant")
         session.add(tenant)
-        await session.flush() 
+        await session.flush()
 
-        session.add(ApiKey(tenant_id=tenant.id, prefix=raw_key[:12], key_hash=key_hash, status="active"))
+        session.add(
+            ApiKey(
+                tenant_id=tenant.id,
+                prefix=raw_key[:12],
+                key_hash=key_hash,
+                status="active",
+            )
+        )
         session.add(BudgetAccount(tenant_id=tenant.id, monthly_limit_usd=10))
         await session.commit()
 

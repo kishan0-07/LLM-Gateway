@@ -14,8 +14,6 @@ class CompletionCreateRequest(BaseModel):
     max_tokens: int | None = Field(None, ge=1, le=131_072)
     stream: bool = False  # parsed here, routed to StreamCompletion on Days 8-9
 
-    
-
 
 class UsageResponse(BaseModel):
     input_tokens: int
@@ -29,6 +27,7 @@ class CompletionCreateResponse(BaseModel):
     provider: str
     model: str
     usage: UsageResponse
+
 
 class StreamChunk(BaseModel):
     type: str  # "delta", "usage", "error", "done"

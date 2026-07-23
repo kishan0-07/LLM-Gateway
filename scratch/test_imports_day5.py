@@ -1,7 +1,13 @@
 import importlib
 import pkgutil
 
-PACKAGES = ["app.api", "app.application", "app.domain", "app.infrastructure", "app.workers"]
+PACKAGES = [
+    "app.api",
+    "app.application",
+    "app.domain",
+    "app.infrastructure",
+    "app.workers",
+]
 
 
 def check_package(pkg_name: str):

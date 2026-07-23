@@ -46,7 +46,11 @@ class LangfuseEventSink(EventSink):
 
 @lru_cache
 def get_langfuse_client():
-    if not settings.langfuse_enabled:
+    if (
+        not settings.langfuse_enabled
+        or settings.langfuse_public_key is None
+        or settings.langfuse_secret_key is None
+    ):
         return None
 
     from langfuse import Langfuse

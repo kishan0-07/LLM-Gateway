@@ -1,6 +1,6 @@
 from decimal import Decimal
 from sqlalchemy import func, select
-from app.application.ports.stats_reader import  GatewayOverheadSummary, UsageStatsSummary
+from app.application.ports.stats_reader import GatewayOverheadSummary, UsageStatsSummary
 from app.infrastructure.db.models import GatewayRequest, ProviderAttempt, UsageLedger
 from app.infrastructure.db.session import AsyncSessionLocal
 

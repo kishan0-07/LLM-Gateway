@@ -13,6 +13,7 @@ from app.domain.provider import ProviderStreamEvent
 
 # --- Reusable assertion helpers ---
 
+
 async def latest_request_for_trace(trace_id: str) -> GatewayRequest:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -33,9 +34,12 @@ async def attempts_for_request(gateway_request_id: int) -> list[ProviderAttempt]
 
 async def reservation_status_for_request(gateway_request_id: int) -> str:
     from app.infrastructure.db.models import BudgetReservation
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(BudgetReservation).where(BudgetReservation.gateway_request_id == gateway_request_id)
+            select(BudgetReservation).where(
+                BudgetReservation.gateway_request_id == gateway_request_id
+            )
         )
         res = result.scalars().first()
         return res.status if res else None
@@ -58,22 +62,36 @@ def _make_use_cases(mock_provider, *, rate_limiter=None, budget_store=None):
     store = budget_store or RedisBudgetStore()
     token_estimator = TokenEstimator()
     budget_authorizer = BudgetAuthorizer(store, store, token_estimator)
-    routing = RoutingEngine(providers={
-        "mock": mock_provider,
-        "groq": mock_provider,
-        "openai": mock_provider,
-    })
+    routing = RoutingEngine(
+        providers={
+            "mock": mock_provider,
+            "groq": mock_provider,
+            "openai": mock_provider,
+        }
+    )
     circuit = CircuitBreaker()
     rl = rate_limiter or RedisRateLimiter()
     event_sink = LogEventSink()
     validator = ResponseValidator()
 
     return CompletionUseCases(
-        execute=ExecuteCompletion(budget_authorizer, routing, circuit, validator, rl, event_sink),
-        stream=StreamCompletion(budget_authorizer, routing, circuit, validator, rl, event_sink, token_estimator),
+        execute=ExecuteCompletion(
+            budget_authorizer, routing, circuit, validator, rl, event_sink, token_estimator
+        ),
+        stream=StreamCompletion(
+            budget_authorizer,
+            routing,
+            circuit,
+            validator,
+            rl,
+            event_sink,
+            token_estimator,
+        ),
     )
 
+
 # Test 1: Happy path — non-streaming
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -82,11 +100,15 @@ async def test_1_happy_non_stream(test_env, mock_gateway):
     trace_id = "smoke-non-stream"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     assert response.status_code == 200
     req = await latest_request_for_trace(trace_id)
@@ -103,6 +125,7 @@ async def test_1_happy_non_stream(test_env, mock_gateway):
 
 # Test 2: Happy path — streaming
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mock_gateway", ["stream_delta"], indirect=True)
@@ -110,11 +133,15 @@ async def test_2_happy_stream(test_env, mock_gateway):
     trace_id = "smoke-stream"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": True,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
@@ -132,6 +159,7 @@ async def test_2_happy_stream(test_env, mock_gateway):
 
 # Test 3: Budget exhausted before provider call
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mock_gateway", ["success"], indirect=True)
@@ -147,17 +175,22 @@ async def test_3_budget_exhausted_before_provider(test_env, mock_gateway):
 
     # Also zero out the Redis budget counter so the Lua script sees limit=0
     from app.infrastructure.redis.client import get_redis
+
     r = get_redis()
     await r.delete(f"budget:{test_env['tenant_id']}:used")
 
     trace_id = "smoke-budget-fail"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "budget_exceeded"
@@ -170,6 +203,7 @@ async def test_3_budget_exhausted_before_provider(test_env, mock_gateway):
 
 
 # Test 4: Budget exhausted mid-stream
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -193,12 +227,16 @@ async def test_4_budget_exhausted_mid_stream(test_env):
     trace_id = "smoke-budget-mid-stream"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": True,
-            "max_tokens": 50,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "max_tokens": 50,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     app.dependency_overrides.clear()
 
@@ -215,6 +253,7 @@ async def test_4_budget_exhausted_mid_stream(test_env):
 
 # Test 5: Provider failure with fallback to another provider
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_5_provider_failure_with_fallback(test_env):
@@ -224,7 +263,9 @@ async def test_5_provider_failure_with_fallback(test_env):
     class FallbackMockProvider(MockProvider):
         async def complete(self, model: str, messages: list[dict], *, max_tokens: int):
             if model == "gpt-5.4-mini":
-                raise self._wrap_error("timeout", "openai forced timeout", retryable=True)
+                raise self._wrap_error(
+                    "timeout", "openai forced timeout", retryable=True
+                )
             return await super().complete(model, messages, max_tokens=max_tokens)
 
     mock_provider = FallbackMockProvider()
@@ -234,11 +275,15 @@ async def test_5_provider_failure_with_fallback(test_env):
     trace_id = "smoke-fallback"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     app.dependency_overrides.clear()
 
@@ -253,6 +298,7 @@ async def test_5_provider_failure_with_fallback(test_env):
 
 
 # Test 6: Empty output triggers validator failure and fallback
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -276,11 +322,15 @@ async def test_6_empty_output_fallback(test_env):
     trace_id = "smoke-empty-output"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "openai/gpt-oss-20b",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "openai/gpt-oss-20b",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     app.dependency_overrides.clear()
 
@@ -297,6 +347,7 @@ async def test_6_empty_output_fallback(test_env):
 
 
 # Test 7: All providers unavailable
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -315,11 +366,15 @@ async def test_7_all_providers_unavailable(test_env):
     trace_id = "smoke-all-failed"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+        )
 
     app.dependency_overrides.clear()
 
@@ -331,7 +386,9 @@ async def test_7_all_providers_unavailable(test_env):
     res_status = await reservation_status_for_request(req.id)
     assert res_status == "settled"
 
+
 # Test 8: Rate limit exceeded
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -351,19 +408,27 @@ async def test_8_rate_limit_exceeded(test_env):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # First request — allowed
-        res1 = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id_1})
+        res1 = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id_1},
+        )
         assert res1.status_code == 200
 
         # Second request — immediately throttled
-        res2 = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id_2})
+        res2 = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id_2},
+        )
 
     app.dependency_overrides.clear()
 
@@ -375,8 +440,8 @@ async def test_8_rate_limit_exceeded(test_env):
     assert req.status == "rate_limited"
 
 
-
 # Test 9: Missing or invalid API key
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -387,18 +452,26 @@ async def test_9_missing_or_invalid_api_key(test_env):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # Missing key
-        res1 = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-Trace-ID": trace_id_1})
+        res1 = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-Trace-ID": trace_id_1},
+        )
 
         # Invalid key
-        res2 = await ac.post("/v1/chat/completions", json={
-            "model": "gpt-5.4-mini",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
-        }, headers={"X-API-Key": "bad-key-value", "X-Trace-ID": trace_id_2})
+        res2 = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+            headers={"X-API-Key": "bad-key-value", "X-Trace-ID": trace_id_2},
+        )
 
     assert res1.status_code == 401
     assert res1.json()["error"]["code"] == "authentication_failed"
@@ -410,6 +483,7 @@ async def test_9_missing_or_invalid_api_key(test_env):
 
 
 # Test 10: Database unavailable after auth but before provider call
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -428,14 +502,20 @@ async def test_10_database_unavailable_before_provider(test_env):
         "app.application.use_cases.execute_completion.AsyncSessionLocal",
         side_effect=Exception("Simulated DB connection failure"),
     ):
-        with patch.object(mock_provider, "complete", wraps=mock_provider.complete) as spy:
+        with patch.object(
+            mock_provider, "complete", wraps=mock_provider.complete
+        ) as spy:
             transport = ASGITransport(app=app, raise_app_exceptions=False)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                response = await ac.post("/v1/chat/completions", json={
-                    "model": "gpt-5.4-mini",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": False,
-                }, headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id})
+                response = await ac.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.4-mini",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": False,
+                    },
+                    headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
+                )
 
             # Provider was never called because DB failed first
             assert spy.call_count == 0
@@ -445,20 +525,24 @@ async def test_10_database_unavailable_before_provider(test_env):
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "database_unavailable"
 
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_budget_backend_unavailable_before_provider(test_env):
     from app.infrastructure.providers.mock import MockProvider
     from app.api.deps import get_completion_use_cases
     from app.application.ports.budget_store import BudgetBackendUnavailable
-    
+
     class UnavailableBudgetStore:
         async def try_reserve(self, request):
             raise BudgetBackendUnavailable()
+
         async def settle(self, *args, **kwargs):
             raise AssertionError("settle must not run without a reservation")
+
         async def remaining_usd(self, tenant_id: int) -> float:
             raise AssertionError("streaming was not entered")
+
         async def expire_stale_once(self) -> int:
             return 0
 
@@ -472,22 +556,27 @@ async def test_budget_backend_unavailable_before_provider(test_env):
     with patch.object(mock_provider, "complete", wraps=mock_provider.complete) as spy:
         try:
             transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
                 response = await client.post(
                     "/v1/chat/completions",
                     json={
                         "model": "gpt-5.4-mini",
                         "messages": [{"role": "user", "content": "hello"}],
                     },
-                    headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": "test-budget-fail-closed"},
+                    headers={
+                        "X-API-Key": test_env["api_key"],
+                        "X-Trace-ID": "test-budget-fail-closed",
+                    },
                 )
 
             assert response.status_code == 503
             assert response.json()["error"]["code"] == "budget_backend_unavailable"
-            
+
             # Assert no provider calls
             assert spy.call_count == 0
-            
+
             req = await latest_request_for_trace("test-budget-fail-closed")
             assert req.status == "budget_backend_unavailable"
         finally:

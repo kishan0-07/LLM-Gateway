@@ -7,8 +7,13 @@ from sqlalchemy import text, delete, select
 from app.main import app
 from app.infrastructure.db.session import AsyncSessionLocal
 from app.infrastructure.db.models import (
-    Tenant, ApiKey, BudgetAccount, GatewayRequest,
-    ProviderAttempt, BudgetReservation, UsageLedger,
+    Tenant,
+    ApiKey,
+    BudgetAccount,
+    GatewayRequest,
+    ProviderAttempt,
+    BudgetReservation,
+    UsageLedger,
 )
 from app.infrastructure.redis.client import get_redis
 from app.api.deps import get_completion_use_cases, CompletionUseCases
@@ -18,6 +23,7 @@ from app.api.deps import get_completion_use_cases, CompletionUseCases
 async def _check_infra():
     """Ensure Postgres and Redis are reachable before running any tests."""
     from app.infrastructure.db.session import engine
+
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -82,11 +88,15 @@ async def test_env(_check_infra):
             )
             # 3. Delete budget_reservations
             await session.execute(
-                delete(BudgetReservation).where(BudgetReservation.gateway_request_id.in_(gw_ids))
+                delete(BudgetReservation).where(
+                    BudgetReservation.gateway_request_id.in_(gw_ids)
+                )
             )
             # 4. Delete provider_attempts
             await session.execute(
-                delete(ProviderAttempt).where(ProviderAttempt.gateway_request_id.in_(gw_ids))
+                delete(ProviderAttempt).where(
+                    ProviderAttempt.gateway_request_id.in_(gw_ids)
+                )
             )
             # 5. Delete gateway_requests
             await session.execute(
@@ -94,7 +104,9 @@ async def test_env(_check_infra):
             )
 
         # 6. Delete budget_account, api_key, tenant (CASCADE handles api_key & budget)
-        await session.execute(delete(BudgetAccount).where(BudgetAccount.tenant_id == tenant_id))
+        await session.execute(
+            delete(BudgetAccount).where(BudgetAccount.tenant_id == tenant_id)
+        )
         await session.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
         await session.execute(delete(Tenant).where(Tenant.id == tenant_id))
         await session.commit()
@@ -132,19 +144,37 @@ def mock_gateway(request):
         token_estimator=token_estimator,
     )
 
-    routing = RoutingEngine(providers={
-        "mock": mock_provider,
-        "groq": mock_provider,
-        "openai": mock_provider,
-    })
+    routing = RoutingEngine(
+        providers={
+            "mock": mock_provider,
+            "groq": mock_provider,
+            "openai": mock_provider,
+        }
+    )
     circuit = CircuitBreaker()
     rate_limiter = RedisRateLimiter()
     event_sink = LogEventSink()
     validator = ResponseValidator()
 
     use_cases = CompletionUseCases(
-        execute=ExecuteCompletion(budget_authorizer, routing, circuit, validator, rate_limiter, event_sink),
-        stream=StreamCompletion(budget_authorizer, routing, circuit, validator, rate_limiter, event_sink, token_estimator),
+        execute=ExecuteCompletion(
+            budget_authorizer,
+            routing,
+            circuit,
+            validator,
+            rate_limiter,
+            event_sink,
+            token_estimator,
+        ),
+        stream=StreamCompletion(
+            budget_authorizer,
+            routing,
+            circuit,
+            validator,
+            rate_limiter,
+            event_sink,
+            token_estimator,
+        ),
     )
 
     app.dependency_overrides[get_completion_use_cases] = lambda: use_cases

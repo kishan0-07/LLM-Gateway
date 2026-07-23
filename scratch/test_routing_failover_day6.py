@@ -6,7 +6,10 @@ from app.infrastructure.redis.circuit_breaker import CircuitBreaker
 from app.application.services.budget_authorizer import BudgetAuthorizer
 from app.application.services.token_estimator import TokenEstimator
 from app.infrastructure.redis.budget_store import RedisBudgetStore
-from app.application.use_cases.execute_completion import ExecuteCompletion, CompletionRequest
+from app.application.use_cases.execute_completion import (
+    ExecuteCompletion,
+    CompletionRequest,
+)
 from app.infrastructure.db.session import AsyncSessionLocal
 from app.infrastructure.db.models import Tenant, BudgetAccount
 
@@ -37,18 +40,22 @@ async def main():
     routing = RoutingEngine(providers=providers)
     cb = CircuitBreaker(failure_threshold=3, recovery_timeout=60)
     validator = ResponseValidator()
-    
+
     groq_failing = MockProvider(mode="error")
     groq_failing.metadata = type(groq_failing.metadata)(
-        name="groq", models=["openai/gpt-oss-20b"],
-        supports_streaming_usage=True, tokenizer_hint="mock",
+        name="groq",
+        models=["openai/gpt-oss-20b"],
+        supports_streaming_usage=True,
+        tokenizer_hint="mock",
         pricing={"openai/gpt-oss-20b": {"input_per_1m": 0.0, "output_per_1m": 0.0}},
     )
 
     openai_success = MockProvider(mode="success")
     openai_success.metadata = type(openai_success.metadata)(
-        name="openai", models=["gpt-5.4-mini"],
-        supports_streaming_usage=True, tokenizer_hint="mock",
+        name="openai",
+        models=["gpt-5.4-mini"],
+        supports_streaming_usage=True,
+        tokenizer_hint="mock",
         pricing={"gpt-5.4-mini": {"input_per_1m": 0.0, "output_per_1m": 0.0}},
     )
 
@@ -62,18 +69,23 @@ async def main():
         response_validator=validator,
     )
 
-    response = await use_case.execute(CompletionRequest(
-        tenant_id=tenant_id, trace_id="test-failover-day6",
-        model="openai/gpt-oss-20b",
-        messages=[{"role": "user", "content": "hello"}],
-    ))
+    response = await use_case.execute(
+        CompletionRequest(
+            tenant_id=tenant_id,
+            trace_id="test-failover-day6",
+            model="openai/gpt-oss-20b",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    )
     print(f" Failover worked: Groq failed, OpenAI responded: {response.content}")
 
     # Test 2: Empty output triggers failover without circuit poison
     groq_empty = MockProvider(mode="empty")
     groq_empty.metadata = type(groq_empty.metadata)(
-        name="groq", models=["openai/gpt-oss-20b"],
-        supports_streaming_usage=True, tokenizer_hint="mock",
+        name="groq",
+        models=["openai/gpt-oss-20b"],
+        supports_streaming_usage=True,
+        tokenizer_hint="mock",
         pricing={"openai/gpt-oss-20b": {"input_per_1m": 0.0, "output_per_1m": 0.0}},
     )
     providers2 = {"groq": groq_empty, "openai": openai_success}
@@ -84,11 +96,14 @@ async def main():
     use_case2 = ExecuteCompletion(authorizer, routing2, cb2, validator)
 
     tenant_id2 = await setup_tenant(limit_usd=10.0)
-    response2 = await use_case2.execute(CompletionRequest(
-        tenant_id=tenant_id2, trace_id="test-empty-failover",
-        model="openai/gpt-oss-20b",
-        messages=[{"role": "user", "content": "hello"}],
-    ))
+    response2 = await use_case2.execute(
+        CompletionRequest(
+            tenant_id=tenant_id2,
+            trace_id="test-empty-failover",
+            model="openai/gpt-oss-20b",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    )
     print(f" Empty output failover: {response2.content}")
 
     # Verify Groq circuit is NOT tripped (empty_output doesn't poison health)

@@ -30,15 +30,19 @@ async def test_mock_stream():
     )
 
     request = StreamRequest(
-        tenant_id=1, trace_id="test-stream-1",
-        model="mock-model", messages=[{"role": "user", "content": "test"}],
+        tenant_id=1,
+        trace_id="test-stream-1",
+        model="mock-model",
+        messages=[{"role": "user", "content": "test"}],
     )
 
     events = []
     async for event in use_case.stream(request):
         events.append(event)
-        print(f"  Event: type={event.type}, content={event.content}, "
-              f"input_tokens={event.input_tokens}, output_tokens={event.output_tokens}")
+        print(
+            f"  Event: type={event.type}, content={event.content}, "
+            f"input_tokens={event.input_tokens}, output_tokens={event.output_tokens}"
+        )
 
     types = [e.type for e in events]
     assert "delta" in types, "Expected at least one delta event"
@@ -66,8 +70,10 @@ async def test_provider_error_raised():
     )
 
     request = StreamRequest(
-        tenant_id=1, trace_id="test-stream-2",
-        model="mock-model", messages=[{"role": "user", "content": "test"}],
+        tenant_id=1,
+        trace_id="test-stream-2",
+        model="mock-model",
+        messages=[{"role": "user", "content": "test"}],
     )
 
     events = []
@@ -75,7 +81,9 @@ async def test_provider_error_raised():
         events.append(event)
         print(f"  Event: type={event.type}, content={event.content}")
 
-    assert any(e.type == "error" for e in events), "Expected an error event from except path"
+    assert any(e.type == "error" for e in events), (
+        "Expected an error event from except path"
+    )
     print(" Test 2 (provider raises exception) passed")
     print("  This tested the 'except Exception' path, NOT the 'yield error event' path")
     print()
@@ -100,7 +108,8 @@ async def test_invalid_model():
     )
 
     request = StreamRequest(
-        tenant_id=1, trace_id="test-stream-3",
+        tenant_id=1,
+        trace_id="test-stream-3",
         model="nonexistent-model",  # not in catalog
         messages=[{"role": "user", "content": "test"}],
     )
@@ -110,7 +119,9 @@ async def test_invalid_model():
         events.append(event)
         print(f"  Event: type={event.type}, content={event.content}")
 
-    assert any(e.type == "error" for e in events), "Expected an error event for invalid model"
+    assert any(e.type == "error" for e in events), (
+        "Expected an error event for invalid model"
+    )
     print(" Test 3 (invalid model) passed — no crash, clean error event")
     print()
 

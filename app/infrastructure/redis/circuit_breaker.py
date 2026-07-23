@@ -49,8 +49,12 @@ class CircuitBreaker:
         # If in half_open, the trial request failed — immediately re-open
         if state == "half_open":
             await self._redis.set(self._key(provider, model, "state"), "open")
-            await self._redis.set(self._key(provider, model, "opened_at"), str(time.time()))
-            logger.warning("circuit_reopened_from_half_open", provider=provider, model=model)
+            await self._redis.set(
+                self._key(provider, model, "opened_at"), str(time.time())
+            )
+            logger.warning(
+                "circuit_reopened_from_half_open", provider=provider, model=model
+            )
             return
 
         # Normal CLOSED path - count consecutive failures
@@ -60,5 +64,9 @@ class CircuitBreaker:
 
         if count >= self._failure_threshold:
             await self._redis.set(self._key(provider, model, "state"), "open")
-            await self._redis.set(self._key(provider, model, "opened_at"), str(time.time()))
-            logger.warning("circuit_opened", provider=provider, model=model, failures=count)
+            await self._redis.set(
+                self._key(provider, model, "opened_at"), str(time.time())
+            )
+            logger.warning(
+                "circuit_opened", provider=provider, model=model, failures=count
+            )

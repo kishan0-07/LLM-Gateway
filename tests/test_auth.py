@@ -33,6 +33,7 @@ async def test_missing_api_key_returns_401():
     assert body["error"]["message"] == "Missing API key"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_invalid_api_key_returns_401():
     transport = ASGITransport(app=app)

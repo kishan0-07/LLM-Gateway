@@ -16,8 +16,12 @@ async def main():
         ("openai", openai, "gpt-5.4-mini"),
         ("mock", mock, "mock-model"),
     ]:
-        assert isinstance(provider, ProviderClient), f"{name} does not structurally satisfy ProviderClient"
-        result = await provider.complete(model, [{"role": "user", "content": "Say hi in 3 words."}])
+        assert isinstance(provider, ProviderClient), (
+            f"{name} does not structurally satisfy ProviderClient"
+        )
+        result = await provider.complete(
+            model, [{"role": "user", "content": "Say hi in 3 words."}]
+        )
         print(name, result)
         assert result.provider and result.content and result.input_tokens >= 0
 

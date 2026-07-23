@@ -24,7 +24,9 @@ class ProviderStreamEvent:
 @dataclass
 class ProviderError(Exception):
     provider: str
-    category: Literal["timeout", "rate_limited", "server_error", "invalid_request", "empty_output"]
+    category: Literal[
+        "timeout", "rate_limited", "server_error", "invalid_request", "empty_output"
+    ]
     message: str
     retryable: bool
 

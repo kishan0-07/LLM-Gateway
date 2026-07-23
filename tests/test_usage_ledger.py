@@ -27,25 +27,38 @@ async def test_successful_settlement_writes_ledger_row(test_env):
         await session.commit()
         gw_id = gw.id
 
-    result = await store.try_reserve(ReservationRequest(
-        tenant_id=test_env["tenant_id"],
-        gateway_request_id=gw_id,
-        estimated_tokens=200,
-        estimated_cost_usd=0.005,
-    ))
+    result = await store.try_reserve(
+        ReservationRequest(
+            tenant_id=test_env["tenant_id"],
+            gateway_request_id=gw_id,
+            requested_model="mock-model",
+            estimated_input_tokens=50,
+            estimated_output_tokens=50,
+            estimated_tokens=200,
+            estimated_cost_usd=0.005,
+        )
+    )
     assert result.approved
 
     await store.settle(
         reservation_id=result.reservation_id,
-        provider="openai", model="gpt-5.4-mini",
-        input_tokens=50, output_tokens=30,
-        actual_cost_usd=0.002, status="success",
+        provider="openai",
+        model="gpt-5.4-mini",
+        input_tokens=50,
+        output_tokens=30,
+        actual_cost_usd=0.002,
+        status="success",
+        usage_source="actual",
     )
 
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(UsageLedger).where(UsageLedger.reservation_id == result.reservation_id)
-        )).scalar_one()
+        row = (
+            await session.execute(
+                select(UsageLedger).where(
+                    UsageLedger.reservation_id == result.reservation_id
+                )
+            )
+        ).scalar_one()
 
     assert row.provider == "openai"
     assert row.model == "gpt-5.4-mini"
@@ -75,25 +88,38 @@ async def test_error_settlement_writes_estimated_usage(test_env):
         await session.commit()
         gw_id = gw.id
 
-    result = await store.try_reserve(ReservationRequest(
-        tenant_id=test_env["tenant_id"],
-        gateway_request_id=gw_id,
-        estimated_tokens=200,
-        estimated_cost_usd=0.005,
-    ))
+    result = await store.try_reserve(
+        ReservationRequest(
+            tenant_id=test_env["tenant_id"],
+            requested_model="mock-model",
+            estimated_input_tokens=50,
+            estimated_output_tokens=50,
+            gateway_request_id=gw_id,
+            estimated_tokens=200,
+            estimated_cost_usd=0.005,
+        )
+    )
     assert result.approved
 
     await store.settle(
         reservation_id=result.reservation_id,
-        provider="none", model="gpt-5.4-mini",
-        input_tokens=0, output_tokens=0,
-        actual_cost_usd=0.0, status="error",
+        provider="none",
+        model="gpt-5.4-mini",
+        input_tokens=0,
+        output_tokens=0,
+        actual_cost_usd=0.0,
+        status="error",
+        usage_source="estimated",
     )
 
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(UsageLedger).where(UsageLedger.reservation_id == result.reservation_id)
-        )).scalar_one()
+        row = (
+            await session.execute(
+                select(UsageLedger).where(
+                    UsageLedger.reservation_id == result.reservation_id
+                )
+            )
+        ).scalar_one()
 
     assert row.usage_source == "estimated"
     assert row.input_tokens == 0

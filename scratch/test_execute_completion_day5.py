@@ -1,6 +1,9 @@
 import asyncio
 from sqlalchemy import select
-from app.application.use_cases.execute_completion import ExecuteCompletion, CompletionRequest
+from app.application.use_cases.execute_completion import (
+    ExecuteCompletion,
+    CompletionRequest,
+)
 from app.application.services.budget_authorizer import BudgetAuthorizer
 from app.application.services.token_estimator import TokenEstimator
 from app.infrastructure.redis.budget_store import RedisBudgetStore
@@ -21,20 +24,36 @@ async def setup_tenant() -> int:
 
 async def main():
     tenant_id = await setup_tenant()
-    budget_store = RedisBudgetStore()  # one instance, satisfies both BudgetStore and UsageLedger
-    authorizer = BudgetAuthorizer(budget_store=budget_store, usage_ledger=budget_store, token_estimator=TokenEstimator())
-    use_case = ExecuteCompletion(budget_authorizer=authorizer, provider=MockProvider(mode="success"))
+    budget_store = (
+        RedisBudgetStore()
+    )  # one instance, satisfies both BudgetStore and UsageLedger
+    authorizer = BudgetAuthorizer(
+        budget_store=budget_store,
+        usage_ledger=budget_store,
+        token_estimator=TokenEstimator(),
+    )
+    use_case = ExecuteCompletion(
+        budget_authorizer=authorizer, provider=MockProvider(mode="success")
+    )
 
-    response = await use_case.execute(CompletionRequest(
-        tenant_id=tenant_id, trace_id="test-trace-day5", model="openai/gpt-oss-20b",
-        messages=[{"role": "user", "content": "hello"}],
-    ))
+    response = await use_case.execute(
+        CompletionRequest(
+            tenant_id=tenant_id,
+            trace_id="test-trace-day5",
+            model="openai/gpt-oss-20b",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    )
     print(response)
 
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(GatewayRequest).where(GatewayRequest.id == response.gateway_request_id)
-        )).scalar_one()
+        row = (
+            await session.execute(
+                select(GatewayRequest).where(
+                    GatewayRequest.id == response.gateway_request_id
+                )
+            )
+        ).scalar_one()
     assert row.tenant_id == tenant_id
     print("GATEWAY_REQUESTS ROW CONFIRMED, STUBBED RESPONSE RETURNED")
 

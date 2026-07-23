@@ -19,7 +19,9 @@ class TraceIDMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                message.setdefault("headers", []).append((b"x-trace-id", trace_id.encode()))
+                message.setdefault("headers", []).append(
+                    (b"x-trace-id", trace_id.encode())
+                )
             await send(message)
 
         try:

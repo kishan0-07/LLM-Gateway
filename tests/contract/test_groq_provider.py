@@ -32,7 +32,9 @@ async def test_groq_normal_completion():
     resp = completion_response("hello world", 10, 15)
     create_mock = install_completion_client(provider, resp)
 
-    res = await provider.complete("openai/gpt-oss-20b", [{"role": "user", "content": "hi"}], max_tokens=50)
+    res = await provider.complete(
+        "openai/gpt-oss-20b", [{"role": "user", "content": "hi"}], max_tokens=50
+    )
 
     assert res.provider == "groq"
     assert res.model == "openai/gpt-oss-20b"
@@ -42,7 +44,7 @@ async def test_groq_normal_completion():
     create_mock.assert_called_once_with(
         model="openai/gpt-oss-20b",
         messages=[{"role": "user", "content": "hi"}],
-        max_completion_tokens=50
+        max_completion_tokens=50,
     )
 
 
@@ -51,13 +53,15 @@ async def test_groq_bad_request_error():
     provider = GroqProvider(api_key="fake-key")
     http_resp = Response(400, request=Request("POST", "https://api.groq.com"))
     exc = BadRequestError("Invalid model parameter", response=http_resp, body=None)
-    
+
     create_mock = AsyncMock(side_effect=exc)
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock)))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.complete("openai/gpt-oss-20b", [], max_tokens=50)
-    
+
     assert exc_info.value.category == "invalid_request"
     assert not exc_info.value.retryable
 
@@ -67,13 +71,15 @@ async def test_groq_server_error():
     provider = GroqProvider(api_key="fake-key")
     http_resp = Response(500, request=Request("POST", "https://api.groq.com"))
     exc = InternalServerError("Internal server error", response=http_resp, body=None)
-    
+
     create_mock = AsyncMock(side_effect=exc)
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock)))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.complete("openai/gpt-oss-20b", [], max_tokens=50)
-    
+
     assert exc_info.value.category == "server_error"
     assert exc_info.value.retryable
 
@@ -81,32 +87,49 @@ async def test_groq_server_error():
 @pytest.mark.asyncio
 async def test_groq_stream_normal():
     provider = GroqProvider(api_key="fake-key")
-    
+
     chunks = [
-        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hello"))], usage=None),
-        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=" world"))], usage=None),
-        SimpleNamespace(choices=[], usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5)),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="hello"))],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=" world"))],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[], usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        ),
     ]
-    
+
     async def fake_stream_iter():
         for c in chunks:
             yield c
-            
-    create_mock = AsyncMock(return_value=fake_stream_iter())
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock)))
 
-    events = [e async for e in provider.stream("openai/gpt-oss-20b", [{"role": "user", "content": "hi"}], max_tokens=50)]
+    create_mock = AsyncMock(return_value=fake_stream_iter())
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    events = [
+        e
+        async for e in provider.stream(
+            "openai/gpt-oss-20b", [{"role": "user", "content": "hi"}], max_tokens=50
+        )
+    ]
 
     assert len(events) == 4
     assert events[0] == ProviderStreamEvent(type="delta", content="hello")
     assert events[1] == ProviderStreamEvent(type="delta", content=" world")
-    assert events[2] == ProviderStreamEvent(type="usage", input_tokens=10, output_tokens=5)
+    assert events[2] == ProviderStreamEvent(
+        type="usage", input_tokens=10, output_tokens=5
+    )
     assert events[3] == ProviderStreamEvent(type="done")
     create_mock.assert_called_once_with(
         model="openai/gpt-oss-20b",
         messages=[{"role": "user", "content": "hi"}],
         max_completion_tokens=50,
-        stream=True
+        stream=True,
     )
 
 
@@ -119,11 +142,33 @@ async def test_groq_stream_bad_request():
     async def fake_stream_iter():
         raise exc
         yield None
-        
+
     create_mock = AsyncMock(return_value=fake_stream_iter())
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock)))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
 
     events = [e async for e in provider.stream("openai/gpt-oss-20b", [], max_tokens=50)]
     assert len(events) == 1
     assert events[0].type == "error"
     assert "invalid_request" in events[0].content
+
+
+def test_groq_models_use_valid_tiktoken_encoding():
+    """model_catalog tokenizer hints must resolve to real tiktoken encodings."""
+    import tiktoken
+    from app.application.services import model_catalog
+
+    for model_name, info in model_catalog.all_models().items():
+        if info.tokenizer_hint == "mock":  # skip test-only models
+            continue
+        try:
+            enc = tiktoken.get_encoding(info.tokenizer_hint)
+        except ValueError:
+            pytest.fail(
+                f"model '{model_name}' has tokenizer_hint '{info.tokenizer_hint}' "
+                f"which is not a valid tiktoken encoding"
+            )
+        # Verify it actually produces tokens
+        tokens = enc.encode("Hello, world!")
+        assert len(tokens) > 0

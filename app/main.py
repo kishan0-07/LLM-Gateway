@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, cast
 from contextlib import asynccontextmanager, suppress
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -19,6 +20,7 @@ from app.infrastructure.redis.budget_store import RedisBudgetStore
 from app.infrastructure.redis.client import close_redis
 from app.workers.reservation_reconciler import ReservationReconciler
 from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,11 +52,12 @@ async def lifespan(app: FastAPI):
             reconciler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconciler_task
-                
+
         await shutdown_langfuse()
         await close_redis()
         await close_database()
         logger.info("shutdown_complete")
+
 
 app = FastAPI(title="LLM Gateway", lifespan=lifespan)
 app.add_middleware(TraceIDMiddleware)
@@ -62,10 +65,11 @@ app.include_router(health.router)
 app.include_router(completions.router)
 app.include_router(stats.router)
 
-app.add_exception_handler(HTTPException, http_exception_handler)
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(HTTPException, cast(Any, http_exception_handler))
+app.add_exception_handler(StarletteHTTPException, cast(Any, http_exception_handler))
+app.add_exception_handler(RequestValidationError, cast(Any, validation_exception_handler))
 app.add_exception_handler(Exception, unhandled_exception_handler)
+
 
 @app.get("/whoami")
 async def whoami(principal: Principal = Depends(get_principal)):

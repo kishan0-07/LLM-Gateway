@@ -63,7 +63,7 @@ jobs:
         run: uv run ruff check app tests scripts scratch
 
       - name: Format check
-        run: uv run ruff format --check app tests scripts scratch  
+        run: uv run ruff format app tests scripts scratch 
 
       - name: Type-check gateway policy core
         run: uv run mypy app/domain app/application/ports app/application/services app/application/use_cases

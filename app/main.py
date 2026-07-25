@@ -67,7 +67,9 @@ app.include_router(stats.router)
 
 app.add_exception_handler(HTTPException, cast(Any, http_exception_handler))
 app.add_exception_handler(StarletteHTTPException, cast(Any, http_exception_handler))
-app.add_exception_handler(RequestValidationError, cast(Any, validation_exception_handler))
+app.add_exception_handler(
+    RequestValidationError, cast(Any, validation_exception_handler)
+)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 
 

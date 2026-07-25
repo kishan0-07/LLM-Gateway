@@ -53,7 +53,8 @@ class TokenEstimator:
         requested_or_default = (
             requested if requested is not None else DEFAULT_MAX_OUTPUT_TOKENS
         )
-        cap = min(requested_or_default, remaining_context)
+        # Cap against requested, remaining context, AND the model's max output limit
+        cap = min(requested_or_default, remaining_context, info.max_output_tokens)
         if cap < 1:
             raise ValueError("input exceeds the model context window")
         return cap

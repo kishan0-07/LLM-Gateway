@@ -73,6 +73,7 @@ class CompletionUseCases:
 @lru_cache
 def get_event_sink():
     from app.application.ports.event_sink import EventSink
+
     sinks: list[EventSink] = [LogEventSink()]
     langfuse_client = get_langfuse_client()
     if langfuse_client is not None:

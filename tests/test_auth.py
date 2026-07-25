@@ -90,3 +90,23 @@ async def test_trace_id_returned_on_auth_failure():
     assert response.status_code == 401
     assert response.headers["X-Trace-ID"] == trace_id
     assert response.json()["error"]["trace_id"] == trace_id
+
+
+@pytest.mark.asyncio
+async def test_health_always_200():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_ready_returns_200_when_deps_healthy(test_env):
+    """When Postgres and Redis are up, /ready must return 200."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"

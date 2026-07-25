@@ -66,6 +66,13 @@ async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
         "input_tokens": 10,
         "output_tokens": 15,
         "cost_usd": "0.000120",
+        "gateway_overhead_ms": 12,
+        "attempt_count": 1,
+        "failover_count": 0,
+        "outcome": "success",
+        "reconciliation_state": "settled",
+        "final_provider_attempt_id": 1001,
+        "secret_user_pii_field": "SHOULD_NOT_BE_IN_METADATA",
     }
 
     await sink.emit(event)
@@ -81,6 +88,20 @@ async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
     }
     assert updates["output"] == {"response_excerpt": "Hello [PHONE]"}
     assert updates["metadata"]["gatewayTraceId"] == "trace-123"
+    assert updates["metadata"]["gatewayRequestId"] == 456
+    assert updates["metadata"]["provider"] == "openai"
+    assert updates["metadata"]["model"] == "gpt-5.4-mini"
+    assert updates["metadata"]["usageSource"] == "actual"
+    assert updates["metadata"]["gatewayOverheadMs"] == 12
+    assert updates["metadata"]["attemptCount"] == 1
+    assert updates["metadata"]["failoverCount"] == 0
+    assert updates["metadata"]["outcome"] == "success"
+    assert updates["metadata"]["reconciliationState"] == "settled"
+    assert updates["metadata"]["finalProviderAttemptId"] == 1001
+
+    # Ensure unallowed metadata fields (like raw PII or unexpected fields) are strictly filtered out
+    assert "secret_user_pii_field" not in updates["metadata"]
+    assert "tenantId" not in updates["metadata"]
     assert updates["usage_details"] == {"input": 10, "output": 15}
     assert updates["cost_details"] == {"total": 0.000120}
 

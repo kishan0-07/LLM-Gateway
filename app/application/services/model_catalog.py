@@ -8,19 +8,37 @@ class ModelInfo:
     input_per_1m: float
     output_per_1m: float
     context_limit: int
+    max_output_tokens: int = 65_536
 
 
 _CATALOG: dict[str, ModelInfo] = {
     "openai/gpt-oss-20b": ModelInfo(
-        "groq", "o200k_base", 0.075, 0.30, context_limit=131_072
+        "groq",
+        "o200k_base",
+        0.075,
+        0.30,
+        context_limit=131_072,
+        max_output_tokens=65_536,
     ),
     "openai/gpt-oss-120b": ModelInfo(
-        "groq", "o200k_base", 0.15, 0.60, context_limit=131_072
+        "groq",
+        "o200k_base",
+        0.15,
+        0.60,
+        context_limit=131_072,
+        max_output_tokens=65_536,
     ),
     "gpt-5.4-mini": ModelInfo(
-        "openai", "o200k_base", 0.75, 4.50, context_limit=400_000
+        "openai",
+        "o200k_base",
+        0.75,
+        4.50,
+        context_limit=400_000,
+        max_output_tokens=128_000,
     ),
-    "mock-model": ModelInfo("mock", "mock", 0.00, 0.00, context_limit=400_000),
+    "mock-model": ModelInfo(
+        "mock", "mock", 0.00, 0.00, context_limit=400_000, max_output_tokens=128_000
+    ),
 }
 
 

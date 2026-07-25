@@ -360,6 +360,12 @@ class StreamCompletion:
                     output_tokens=settle_output,
                     cost_usd=cost_usd,
                     usage_source=usage_source_label,
+                    gateway_overhead_ms=None,
+                    attempt_count=1,
+                    failover_count=0,
+                    outcome=final_status,
+                    reconciliation_state="settled",
+                    final_provider_attempt_id=attempt_id,
                     prompt_excerpt=request.messages[-1].get("content", "")
                     if request.messages
                     else "",

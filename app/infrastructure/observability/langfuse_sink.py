@@ -8,12 +8,46 @@ from app.core.config import settings
 from app.core.logging import logger
 
 
+ALLOWED_LANGFUSE_METADATA = (
+    "gatewayTraceId",
+    "gatewayRequestId",
+    "finalProviderAttemptId",
+    "provider",
+    "model",
+    "usageSource",
+    "gatewayOverheadMs",
+    "attemptCount",
+    "failoverCount",
+    "outcome",
+    "reconciliationState",
+)
+
+
 class LangfuseEventSink(EventSink):
     def __init__(self, client):
         self._client = client
 
     async def emit(self, event: dict) -> None:
         try:
+            raw_metadata = {
+                "gatewayTraceId": event.get("trace_id"),
+                "gatewayRequestId": event.get("request_id"),
+                "finalProviderAttemptId": event.get("final_provider_attempt_id"),
+                "provider": event.get("provider"),
+                "model": event.get("model"),
+                "usageSource": event.get("usage_source"),
+                "gatewayOverheadMs": event.get("gateway_overhead_ms"),
+                "attemptCount": event.get("attempt_count"),
+                "failoverCount": event.get("failover_count"),
+                "outcome": event.get("outcome"),
+                "reconciliationState": event.get("reconciliation_state"),
+            }
+            metadata = {
+                k: v
+                for k, v in raw_metadata.items()
+                if k in ALLOWED_LANGFUSE_METADATA and v is not None
+            }
+
             # Langfuse traces are non-billing, best-effort observability Generation contexts.
             with self._client.start_as_current_observation(
                 as_type="generation",
@@ -23,13 +57,7 @@ class LangfuseEventSink(EventSink):
                 generation.update(
                     input={"prompt_excerpt": event.get("prompt_excerpt", "")},
                     output={"response_excerpt": event.get("response_excerpt", "")},
-                    metadata={
-                        "gatewayTraceId": event.get("trace_id"),
-                        "gatewayRequestId": event.get("request_id"),
-                        "tenantId": event.get("tenant_id"),
-                        "provider": event.get("provider"),
-                        "usageSource": event.get("usage_source"),
-                    },
+                    metadata=metadata,
                     usage_details={
                         "input": event.get("input_tokens", 0),
                         "output": event.get("output_tokens", 0),

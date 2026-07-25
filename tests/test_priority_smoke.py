@@ -76,7 +76,13 @@ def _make_use_cases(mock_provider, *, rate_limiter=None, budget_store=None):
 
     return CompletionUseCases(
         execute=ExecuteCompletion(
-            budget_authorizer, routing, circuit, validator, rl, event_sink, token_estimator
+            budget_authorizer,
+            routing,
+            circuit,
+            validator,
+            rl,
+            event_sink,
+            token_estimator,
         ),
         stream=StreamCompletion(
             budget_authorizer,

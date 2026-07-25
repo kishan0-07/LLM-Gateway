@@ -1,0 +1,14 @@
+.git
+.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.production.example
+tests
+scratch
+scripts
+docs/chaos/*.log

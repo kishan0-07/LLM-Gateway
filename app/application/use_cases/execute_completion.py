@@ -260,6 +260,13 @@ class ExecuteCompletion:
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 cost_usd=cost_usd,
+                usage_source=result.usage_source,
+                gateway_overhead_ms=gateway_overhead_ms,
+                attempt_count=attempt_number,
+                failover_count=attempt_number - 1,
+                outcome="success",
+                reconciliation_state="settled",
+                final_provider_attempt_id=attempt_id,
                 prompt_excerpt=request.messages[-1].get("content", "")
                 if request.messages
                 else "",
@@ -287,6 +294,10 @@ class ExecuteCompletion:
         )
         await self._update_gateway_request_status(gateway_request_id, "failed")
 
+        overhead_ms = max(
+            0,
+            int((time.perf_counter() - started_at) * 1000) - provider_latency_ms_total,
+        )
         await self._emit_event(
             event_type="request_failed",
             trace_id=request.trace_id,
@@ -297,6 +308,12 @@ class ExecuteCompletion:
             input_tokens=0,
             output_tokens=0,
             cost_usd=0.0,
+            usage_source="estimated",
+            gateway_overhead_ms=overhead_ms,
+            attempt_count=attempt_number,
+            failover_count=max(0, attempt_number - 1),
+            outcome="failed",
+            reconciliation_state="settled",
             prompt_excerpt=request.messages[-1].get("content", "")
             if request.messages
             else "",

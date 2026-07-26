@@ -14,7 +14,7 @@ class ModelInfo:
 _CATALOG: dict[str, ModelInfo] = {
     "openai/gpt-oss-20b": ModelInfo(
         "groq",
-        "o200k_base",
+        "o200k_harmony",
         0.075,
         0.30,
         context_limit=131_072,
@@ -22,7 +22,7 @@ _CATALOG: dict[str, ModelInfo] = {
     ),
     "openai/gpt-oss-120b": ModelInfo(
         "groq",
-        "o200k_base",
+        "o200k_harmony",
         0.15,
         0.60,
         context_limit=131_072,

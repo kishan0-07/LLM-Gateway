@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 import hashlib
-import time
+import uuid
 from decimal import Decimal
 from sqlalchemy import text, delete, select
 from app.main import app
@@ -10,6 +10,7 @@ from app.infrastructure.db.models import (
     Tenant,
     ApiKey,
     BudgetAccount,
+    BudgetPeriod,
     GatewayRequest,
     ProviderAttempt,
     BudgetReservation,
@@ -28,20 +29,30 @@ async def _check_infra():
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
     except Exception as exc:
-        pytest.skip(f"Postgres not available: {exc}")
+        pytest.fail(
+            "PostgreSQL is unavailable for integration tests. "
+            "Run `docker compose up -d postgres redis`. "
+            f"Cause: {type(exc).__name__}"
+        )
 
     try:
         r = get_redis()
-        await r.ping()
+        if not await r.ping():
+            raise RuntimeError("Redis PING did not return success")
     except Exception as exc:
-        pytest.skip(f"Redis not available: {exc}")
+        pytest.fail(
+            "Redis is unavailable for integration tests. "
+            "Run `docker compose up -d postgres redis`. "
+            f"Cause: {type(exc).__name__}"
+        )
 
 
 @pytest_asyncio.fixture
 async def test_env(_check_infra):
     """Yields a unique test tenant, active key, and budget account, cleaning up after."""
-    tenant_name = f"test-tenant-{int(time.time() * 1000)}"
-    api_key_str = f"test-key-{int(time.time() * 1000)}"
+    test_id = uuid.uuid4().hex
+    tenant_name = f"test-tenant-{test_id}"
+    api_key_str = f"test-key-{test_id}"
 
     async with AsyncSessionLocal() as session:
         tenant = Tenant(name=tenant_name)
@@ -103,7 +114,10 @@ async def test_env(_check_infra):
                 delete(GatewayRequest).where(GatewayRequest.tenant_id == tenant_id)
             )
 
-        # 6. Delete budget_account, api_key, tenant (CASCADE handles api_key & budget)
+        # 6. Delete period/account, API key, and tenant.
+        await session.execute(
+            delete(BudgetPeriod).where(BudgetPeriod.tenant_id == tenant_id)
+        )
         await session.execute(
             delete(BudgetAccount).where(BudgetAccount.tenant_id == tenant_id)
         )
@@ -113,7 +127,6 @@ async def test_env(_check_infra):
 
     # 7. Clean up Redis keys
     r = get_redis()
-    await r.delete(f"budget:{tenant_id}:used")
     await r.delete(f"rate_limit:tenant:{tenant_id}")
     await r.delete(f"rate_limit:api_key:{api_key_id}")
 
@@ -124,7 +137,7 @@ def mock_gateway(request):
     mode = getattr(request, "param", "success")
 
     from app.infrastructure.providers.mock import MockProvider
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
+    from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
     from app.infrastructure.redis.rate_limiter import RedisRateLimiter
     from app.infrastructure.observability.event_logger import LogEventSink
@@ -136,7 +149,7 @@ def mock_gateway(request):
     from app.application.use_cases.stream_completion import StreamCompletion
 
     mock_provider = MockProvider(mode=mode)
-    budget_store = RedisBudgetStore()
+    budget_store = PostgreSQLBudgetStore()
     token_estimator = TokenEstimator()
     budget_authorizer = BudgetAuthorizer(
         budget_store=budget_store,

@@ -54,17 +54,14 @@ class OpenAIProvider(BaseProvider):
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         choice = response.choices[0]
-        if not choice.message.content:
-            raise self._wrap_error(
-                "empty_output", "provider returned empty content", retryable=False
-            )
+        content = choice.message.content or ""
 
         usage = response.usage
         if usage is None:
             return ProviderResult(
                 provider="openai",
                 model=model,
-                content=choice.message.content,
+                content=content,
                 input_tokens=0,
                 output_tokens=0,
                 usage_source="estimated",
@@ -74,7 +71,7 @@ class OpenAIProvider(BaseProvider):
         return ProviderResult(
             provider="openai",
             model=model,
-            content=choice.message.content,
+            content=content,
             input_tokens=usage.prompt_tokens,
             output_tokens=usage.completion_tokens,
             usage_source="actual",

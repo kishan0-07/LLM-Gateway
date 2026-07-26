@@ -14,9 +14,9 @@ from app.api.routes import completions, health, stats
 from app.core.config import settings
 from app.core.logging import logger
 from app.domain.auth import Principal
-from app.api.deps import get_principal
+from app.api.deps import get_completion_use_cases, get_principal
 from app.infrastructure.db.session import close_database
-from app.infrastructure.redis.budget_store import RedisBudgetStore
+from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
 from app.infrastructure.redis.client import close_redis
 from app.workers.reservation_reconciler import ReservationReconciler
 from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
@@ -25,7 +25,7 @@ from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     reconciler = ReservationReconciler(
-        RedisBudgetStore(),
+        PostgreSQLBudgetStore(),
         interval_seconds=settings.reservation_reconcile_interval_seconds,
     )
     reconciler_task = asyncio.create_task(
@@ -52,6 +52,15 @@ async def lifespan(app: FastAPI):
             reconciler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconciler_task
+
+        if get_completion_use_cases.cache_info().currsize:
+            use_cases = get_completion_use_cases()
+            try:
+                await use_cases.stream.drain_finalizers(
+                    timeout_seconds=settings.shutdown_grace_seconds,
+                )
+            except TimeoutError:
+                logger.warning("stream_finalizer_shutdown_timed_out")
 
         await shutdown_langfuse()
         await close_redis()

@@ -1,692 +1,514 @@
-import pytest
 import asyncio
-from decimal import Decimal
-from sqlalchemy import select, update
-from app.infrastructure.db.session import AsyncSessionLocal
-from app.infrastructure.redis.budget_store import RedisBudgetStore
-from app.infrastructure.redis.client import get_redis
+import datetime
+import uuid
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy import func, select, update
+
 from app.domain.budget import ReservationRequest
-from app.infrastructure.db.models import BudgetReservation, BudgetAccount, UsageLedger
+from app.infrastructure.db.models import (
+    BudgetAccount,
+    BudgetPeriod,
+    BudgetReservation,
+    GatewayRequest,
+    ProviderAttempt,
+    UsageLedger,
+)
+from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
+from app.infrastructure.db.session import AsyncSessionLocal
 
 
-async def create_gateway_request_for_test(test_env, trace_id: str) -> int:
-    from app.infrastructure.db.models import GatewayRequest
-    from app.infrastructure.db.session import AsyncSessionLocal
-
+async def _create_request(test_env: dict, *, suffix: str | None = None) -> int:
     async with AsyncSessionLocal() as session:
-        req = GatewayRequest(
+        request = GatewayRequest(
             tenant_id=test_env["tenant_id"],
-            api_key_id=test_env.get("api_key_id"),
-            trace_id=trace_id,
+            api_key_id=test_env["api_key_id"],
+            trace_id=f"budget-{suffix or uuid.uuid4().hex}",
+            status="pending",
         )
-        session.add(req)
+        session.add(request)
         await session.commit()
-        return req.id
+        return request.id
+
+
+async def _create_attempt(request_id: int, attempt_number: int) -> int:
+    async with AsyncSessionLocal() as session:
+        attempt = ProviderAttempt(
+            gateway_request_id=request_id,
+            provider="mock",
+            model="gpt-5.4-mini",
+            attempt_number=attempt_number,
+            status="started",
+        )
+        session.add(attempt)
+        await session.commit()
+        return attempt.id
+
+
+def _reservation_request(
+    test_env: dict,
+    request_id: int,
+    *,
+    cost_micros: int,
+) -> ReservationRequest:
+    return ReservationRequest(
+        tenant_id=test_env["tenant_id"],
+        gateway_request_id=request_id,
+        requested_model="gpt-5.4-mini",
+        estimated_input_tokens=10,
+        estimated_output_tokens=20,
+        estimated_tokens=30,
+        estimated_cost_micros=cost_micros,
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_reservation_creates_postgres_row(test_env):
-
-    store = RedisBudgetStore()
-    # Create a fake gateway_request_id (we need one because of FK)
-    from app.infrastructure.db.models import GatewayRequest
-
-    async with AsyncSessionLocal() as session:
-        gw = GatewayRequest(
-            tenant_id=test_env["tenant_id"],
-            api_key_id=test_env["api_key_id"],
-            trace_id="test-budget-reserve",
-            status="pending",
-            is_stream=False,
-        )
-        session.add(gw)
-        await session.commit()
-        gw_id = gw.id
+async def test_reservation_is_authoritative_in_postgres(test_env):
+    request_id = await _create_request(test_env)
+    store = PostgreSQLBudgetStore()
 
     result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.001,
-        )
+        _reservation_request(test_env, request_id, cost_micros=2_500)
     )
+
     assert result.approved is True
     assert result.reservation_id is not None
 
-    # Verify Postgres row exists
     async with AsyncSessionLocal() as session:
-        row = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert row.status == "reserved"
-        assert row.tenant_id == test_env["tenant_id"]
+        reservation = await session.get(BudgetReservation, result.reservation_id)
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+
+    assert reservation is not None
+    assert reservation.held_micros == 2_500
+    assert reservation.consumed_micros == 0
+    assert period is not None
+    assert period.reserved_micros == 2_500
+    assert period.spent_micros == 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_reservation_rejected_when_over_budget(test_env):
-    from app.infrastructure.redis.budget_store import budget_counter_key
+async def test_redis_outage_cannot_reject_postgres_budget_reservation(test_env):
+    request_id = await _create_request(test_env)
+    store = PostgreSQLBudgetStore()
 
-    # Set budget to $0
+    with patch(
+        "app.infrastructure.redis.client.get_redis",
+        side_effect=ConnectionError("redis unavailable"),
+    ):
+        result = await store.try_reserve(
+            _reservation_request(test_env, request_id, cost_micros=500)
+        )
+
+    assert result.approved is True
+    assert result.reservation_id is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_reservations_cannot_overspend(test_env):
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(BudgetAccount)
             .where(BudgetAccount.tenant_id == test_env["tenant_id"])
-            .values(monthly_limit_usd=Decimal("0.0000"))
+            .values(monthly_limit_usd="0.0010")
         )
         await session.commit()
 
-    r = get_redis()
-    await r.delete(budget_counter_key(test_env["tenant_id"]))
+    request_ids = [
+        await _create_request(test_env, suffix=f"concurrent-{index}")
+        for index in range(25)
+    ]
+    store = PostgreSQLBudgetStore()
 
-    store = RedisBudgetStore()
-    from app.infrastructure.db.models import GatewayRequest
-
-    async with AsyncSessionLocal() as session:
-        gw = GatewayRequest(
-            tenant_id=test_env["tenant_id"],
-            api_key_id=test_env["api_key_id"],
-            trace_id="test-budget-reject",
-            status="pending",
-            is_stream=False,
-        )
-        session.add(gw)
-        await session.commit()
-        gw_id = gw.id
-
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.001,
-        )
-    )
-    assert result.approved is False
-    assert result.reason == "over_budget"
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_settlement_is_idempotent(test_env):
-    """Calling settle() twice with the same reservation_id must not create duplicate ledger rows."""
-    store = RedisBudgetStore()
-    from app.infrastructure.db.models import GatewayRequest
-
-    async with AsyncSessionLocal() as session:
-        gw = GatewayRequest(
-            tenant_id=test_env["tenant_id"],
-            api_key_id=test_env["api_key_id"],
-            trace_id="test-settlement-idempotent",
-            status="pending",
-            is_stream=False,
-        )
-        session.add(gw)
-        await session.commit()
-        gw_id = gw.id
-
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.001,
-        )
-    )
-    assert result.approved
-
-    # Settle once
-    await store.settle(
-        reservation_id=result.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=10,
-        output_tokens=5,
-        actual_cost_usd=0.0005,
-        status="success",
-        usage_source="actual",
-    )
-
-    # Settle again -
-    await store.settle(
-        reservation_id=result.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=10,
-        output_tokens=5,
-        actual_cost_usd=0.0005,
-        status="success",
-        usage_source="actual",
-    )
-
-    # Verify only 1 ledger row
-    async with AsyncSessionLocal() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(UsageLedger).where(
-                        UsageLedger.reservation_id == result.reservation_id
-                    )
-                )
+    results = await asyncio.gather(
+        *[
+            store.try_reserve(
+                _reservation_request(test_env, request_id, cost_micros=100)
             )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_settlement_corrects_redis_counter(test_env):
-    """Settlement must true-up the Redis counter when actual cost differs from estimated."""
-    from app.infrastructure.redis.budget_store import budget_counter_key
-
-    store = RedisBudgetStore()
-    r = get_redis()
-    await r.delete(budget_counter_key(test_env["tenant_id"]))
-
-    from app.infrastructure.db.models import GatewayRequest
-
-    async with AsyncSessionLocal() as session:
-        gw = GatewayRequest(
-            tenant_id=test_env["tenant_id"],
-            api_key_id=test_env["api_key_id"],
-            trace_id="test-settlement-trueup",
-            status="pending",
-            is_stream=False,
-        )
-        session.add(gw)
-        await session.commit()
-        gw_id = gw.id
-
-    estimated_cost = 0.010  # overestimate
-    actual_cost = 0.002  # actual is much less
-
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=500,
-            estimated_cost_usd=estimated_cost,
-        )
-    )
-    assert result.approved
-
-    used_after_reserve = int(
-        await r.get(budget_counter_key(test_env["tenant_id"])) or 0
+            for request_id in request_ids
+        ]
     )
 
-    await store.settle(
-        reservation_id=result.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=10,
-        output_tokens=5,
-        actual_cost_usd=actual_cost,
-        status="success",
-        usage_source="actual",
+    assert sum(result.approved for result in results) == 10
+    approved = [
+        (request_id, result.reservation_id)
+        for request_id, result in zip(request_ids, results, strict=True)
+        if result.approved and result.reservation_id is not None
+    ]
+    attempt_ids = await asyncio.gather(
+        *[_create_attempt(request_id, 1) for request_id, _reservation_id in approved]
     )
-
-    used_after_settle = int(await r.get(budget_counter_key(test_env["tenant_id"])) or 0)
-
-    # After settlement, the Redis counter should have decreased (true-up refund)
-    assert used_after_settle < used_after_reserve
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_stale_reservation_expiry(test_env):
-
-    import datetime
-    from app.infrastructure.redis.budget_store import budget_counter_key
-
-    store = RedisBudgetStore()
-    r = get_redis()
-    await r.delete(budget_counter_key(test_env["tenant_id"]))
-
-    from app.infrastructure.db.models import GatewayRequest
-
-    async with AsyncSessionLocal() as session:
-        gw = GatewayRequest(
-            tenant_id=test_env["tenant_id"],
-            api_key_id=test_env["api_key_id"],
-            trace_id="test-stale-expiry",
-            status="pending",
-            is_stream=False,
-        )
-        session.add(gw)
-        await session.commit()
-        gw_id = gw.id
-
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            gateway_request_id=gw_id,
-            estimated_tokens=100,
-            estimated_cost_usd=0.005,
-        )
-    )
-    assert result.approved
-
-    # Manually backdate the reservation to 2 hours ago
-    async with AsyncSessionLocal() as session:
-        res = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        res.created_at = datetime.datetime.now(
-            datetime.timezone.utc
-        ) - datetime.timedelta(hours=2)
-        await session.commit()
-
-    used_before = int(await r.get(budget_counter_key(test_env["tenant_id"])) or 0)
-
-    # Run reconciler
-    expired_count = await store.expire_stale_once()
-    assert expired_count >= 1
-
-    # Verify reservation is expired
-    async with AsyncSessionLocal() as session:
-        res = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert res.status == "expired"
-
-    used_after = int(await r.get(budget_counter_key(test_env["tenant_id"])) or 0)
-    assert used_after < used_before
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_concurrent_reservations_no_double_spend(test_env):
-    """100 concurrent reservations against a $0.10 budget must not overspend."""
-    from app.infrastructure.redis.budget_store import budget_counter_key
-
-    store = RedisBudgetStore()
-    r = get_redis()
-    await r.delete(budget_counter_key(test_env["tenant_id"]))
-
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            update(BudgetAccount)
-            .where(BudgetAccount.tenant_id == test_env["tenant_id"])
-            .values(monthly_limit_usd=Decimal("0.1000"))
-        )
-        await session.commit()
-
-    from app.infrastructure.db.models import GatewayRequest
-
-    async def make_reservation(i: int):
-        async with AsyncSessionLocal() as session:
-            gw = GatewayRequest(
-                tenant_id=test_env["tenant_id"],
-                api_key_id=test_env["api_key_id"],
-                trace_id=f"concurrent-{i}",
-                status="pending",
-                is_stream=False,
-            )
-            session.add(gw)
-            await session.commit()
-            gw_id = gw.id
-
-        return await store.try_reserve(
-            ReservationRequest(
-                tenant_id=test_env["tenant_id"],
-                gateway_request_id=gw_id,
-                requested_model="mock-model",
-                estimated_input_tokens=50,
-                estimated_output_tokens=50,
-                estimated_tokens=100,
-                estimated_cost_usd=0.01,
-            )
-        )
-
-    results = await asyncio.gather(*[make_reservation(i) for i in range(100)])
-    approved_count = sum(1 for r in results if r.approved)
-
-    assert approved_count == 10, f"Expected 10 approvals, got {approved_count}"
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_settlement_increases_counter_when_actual_cost_exceeds_estimate(test_env):
-    from app.infrastructure.redis.budget_store import (
-        RedisBudgetStore,
-        budget_counter_key,
-    )
-    from app.domain.budget import ReservationRequest
-    from app.infrastructure.redis.client import get_redis
-
-    store = RedisBudgetStore()
-    redis_client = get_redis()
-    key = budget_counter_key(test_env["tenant_id"])
-    await redis_client.delete(key)
-
-    gateway_request_id = await create_gateway_request_for_test(
-        test_env,
-        trace_id="under-estimate-true-up",
-    )
-    reservation = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gateway_request_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=10,
-            estimated_cost_usd=0.001,
-        )
-    )
-    assert reservation.approved
-
-    used_after_reserve = int(await redis_client.get(key) or 0)
-
-    await store.settle(
-        reservation_id=reservation.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=100,
-        output_tokens=100,
-        actual_cost_usd=0.003,
-        status="success",
-        usage_source="actual",
-    )
-
-    used_after_settle = int(await redis_client.get(key) or 0)
-    assert used_after_settle > used_after_reserve
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_settlement_with_missing_month_key_flags_cache_sync(test_env):
-    """When Redis month key is deleted before settlement, cache_sync_required must be True."""
-    from app.infrastructure.redis.budget_store import (
-        RedisBudgetStore,
-        budget_counter_key,
-    )
-
-    store = RedisBudgetStore()
-    r = get_redis()
-
-    gw_id = await create_gateway_request_for_test(test_env, "test-cache-miss")
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.001,
-        )
-    )
-    assert result.approved
-
-    # Simulate Redis cache loss
-    await r.delete(budget_counter_key(test_env["tenant_id"]))
-
-    # Settle — should detect missing key and flag for repair
-    await store.settle(
-        reservation_id=result.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=10,
-        output_tokens=5,
-        actual_cost_usd=0.0005,
-        status="success",
-        usage_source="actual",
-    )
-
-    # Verify the flag is set
-    async with AsyncSessionLocal() as session:
-        row = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert row.status == "settled"
-        assert row.cache_sync_required is True
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_repair_rebuilds_counter_with_positive_ttl(test_env):
-    """After cache-miss settlement, repair must rebuild counter with a finite TTL."""
-    from app.infrastructure.redis.budget_store import (
-        RedisBudgetStore,
-        budget_counter_key,
-    )
-
-    store = RedisBudgetStore()
-    r = get_redis()
-    key = budget_counter_key(test_env["tenant_id"])
-
-    # Force a cache_sync_required flag (reuse the settlement test logic)
-    gw_id = await create_gateway_request_for_test(test_env, "test-repair-ttl")
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.001,
-        )
-    )
-    assert result.approved
-    await r.delete(key)
-    await store.settle(
-        reservation_id=result.reservation_id,
-        provider="mock",
-        model="mock-model",
-        input_tokens=10,
-        output_tokens=5,
-        actual_cost_usd=0.0005,
-        status="success",
-        usage_source="actual",
-    )
-
-    # Run repair
-    repaired = await store.repair_out_of_sync_caches_once()
-    assert repaired >= 1
-
-    # Verify counter exists with a finite TTL
-    ttl = await r.ttl(key)
-    assert ttl > 0, f"Rebuilt counter must have a positive TTL, got {ttl}"
-
-    # Verify flag is cleared
-    async with AsyncSessionLocal() as session:
-        row = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert row.cache_sync_required is False
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_needs_reconciliation_gets_conservative_settlement(test_env):
-    """A stale reservation with a provider attempt must be conservatively settled."""
-    import datetime
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
-    from app.infrastructure.db.models import (
-        ProviderAttempt,
-        BudgetReservation,
-        UsageLedger,
-    )
-
-    store = RedisBudgetStore()
-
-    gw_id = await create_gateway_request_for_test(test_env, "test-reconcile")
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=50,
-            estimated_output_tokens=50,
-            estimated_tokens=100,
-            estimated_cost_usd=0.005,
-        )
-    )
-    assert result.approved
-
-    # Create a provider attempt (simulating a stream that started but didn't finish)
-    async with AsyncSessionLocal() as session:
-        attempt = ProviderAttempt(
-            gateway_request_id=gw_id,
-            provider="mock",
-            model="mock-model",
-            attempt_number=1,
-            status="in_progress",
-        )
-        session.add(attempt)
-
-        # Backdate reservation past grace period
-        res = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        res.created_at = datetime.datetime.now(
-            datetime.timezone.utc
-        ) - datetime.timedelta(hours=2)
-        res.reconciliation_state = "needs_reconciliation"
-        res.reconciliation_reason = "settlement_failed_after_provider_attempt"
-        await session.commit()
-
-    # Run reconciler
-    count = await store.reconcile_needs_reconciliation_once()
-    assert count == 1
-
-    # Verify: reservation settled with estimated usage
-    async with AsyncSessionLocal() as session:
-        res = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert res.status == "settled"
-        assert res.reconciliation_state == "reconciled"
-
-        ledger = (
-            await session.execute(
-                select(UsageLedger).where(
-                    UsageLedger.reservation_id == result.reservation_id
-                )
-            )
-        ).scalar_one()
-        assert ledger.usage_source == "estimated_reconciliation"
-        assert ledger.input_tokens == 50
-        assert ledger.output_tokens == 50
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_reconciliation_idempotent(test_env):
-    """Re-running the reconciler must not create a second ledger row."""
-    import datetime
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
-    from app.infrastructure.db.models import (
-        ProviderAttempt,
-        BudgetReservation,
-        UsageLedger,
-    )
-
-    store = RedisBudgetStore()
-
-    gw_id = await create_gateway_request_for_test(test_env, "test-reconcile-idempotent")
-    result = await store.try_reserve(
-        ReservationRequest(
-            tenant_id=test_env["tenant_id"],
-            gateway_request_id=gw_id,
-            requested_model="mock-model",
-            estimated_input_tokens=30,
-            estimated_output_tokens=30,
-            estimated_tokens=60,
-            estimated_cost_usd=0.003,
-        )
-    )
-    assert result.approved
-
-    async with AsyncSessionLocal() as session:
-        session.add(
-            ProviderAttempt(
-                gateway_request_id=gw_id,
+    await asyncio.gather(
+        *[
+            store.record_attempt_usage(
+                reservation_id=reservation_id,
+                provider_attempt_id=attempt_id,
                 provider="mock",
-                model="mock-model",
-                attempt_number=1,
-                status="in_progress",
+                model="gpt-5.4-mini",
+                input_tokens=1,
+                output_tokens=1,
+                cost_micros=100,
+                usage_source="actual",
+                attempt_status="success",
+                latency_ms=1,
+            )
+            for (_request_id, reservation_id), attempt_id in zip(
+                approved, attempt_ids, strict=True
+            )
+        ]
+    )
+    await asyncio.gather(
+        *[
+            store.finalize_reservation(
+                reservation_id=reservation_id,
+                final_status="completed",
+            )
+            for _request_id, reservation_id in approved
+        ]
+    )
+
+    async with AsyncSessionLocal() as session:
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        ledger_total = await session.scalar(
+            select(func.coalesce(func.sum(UsageLedger.cost_micros), 0)).where(
+                UsageLedger.tenant_id == test_env["tenant_id"]
             )
         )
-        res = (
-            await session.execute(
-                select(BudgetReservation).where(
-                    BudgetReservation.id == result.reservation_id
-                )
+        active_hold_total = await session.scalar(
+            select(func.coalesce(func.sum(BudgetReservation.held_micros), 0)).where(
+                BudgetReservation.tenant_id == test_env["tenant_id"],
+                BudgetReservation.status == "reserved",
             )
-        ).scalar_one()
-        res.created_at = datetime.datetime.now(
-            datetime.timezone.utc
-        ) - datetime.timedelta(hours=2)
-        res.reconciliation_state = "needs_reconciliation"
-        await session.commit()
+        )
+    assert period is not None
+    assert period.reserved_micros == 0
+    assert period.spent_micros == 1_000
+    assert period.reserved_micros + period.spent_micros <= period.limit_micros
+    assert period.spent_micros == ledger_total
+    assert period.reserved_micros == active_hold_total
 
-    # Run twice
-    count1 = await store.reconcile_needs_reconciliation_once()
-    count2 = await store.reconcile_needs_reconciliation_once()
-    assert count1 == 1
-    assert count2 == 0  # Already reconciled — must not repeat
 
-    # Verify exactly one ledger row
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reservation_retry_is_idempotent(test_env):
+    request_id = await _create_request(test_env)
+    store = PostgreSQLBudgetStore()
+    request = _reservation_request(test_env, request_id, cost_micros=900)
+
+    first, second = await asyncio.gather(
+        store.try_reserve(request),
+        store.try_reserve(request),
+    )
+
+    assert first.approved is True
+    assert second.approved is True
+    assert first.reservation_id == second.reservation_id
+
     async with AsyncSessionLocal() as session:
-        rows = (
+        reservation_count = await session.scalar(
+            select(func.count(BudgetReservation.id)).where(
+                BudgetReservation.gateway_request_id == request_id
+            )
+        )
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+    assert reservation_count == 1
+    assert period is not None
+    assert period.reserved_micros == 900
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_attempt_accounting_is_idempotent_and_updates_attempt(test_env):
+    request_id = await _create_request(test_env)
+    attempt_id = await _create_attempt(request_id, 1)
+    store = PostgreSQLBudgetStore()
+    reservation = await store.try_reserve(
+        _reservation_request(test_env, request_id, cost_micros=1_000)
+    )
+    assert reservation.reservation_id is not None
+
+    usage = dict(
+        reservation_id=reservation.reservation_id,
+        provider_attempt_id=attempt_id,
+        provider="mock",
+        model="gpt-5.4-mini",
+        input_tokens=10,
+        output_tokens=20,
+        cost_micros=400,
+        usage_source="actual",
+        attempt_status="success",
+        latency_ms=12,
+    )
+    await store.record_attempt_usage(**usage)
+    await store.record_attempt_usage(**usage)
+
+    async with AsyncSessionLocal() as session:
+        ledger_count = await session.scalar(
+            select(func.count(UsageLedger.id)).where(
+                UsageLedger.provider_attempt_id == attempt_id
+            )
+        )
+        row = await session.scalar(
+            select(UsageLedger).where(UsageLedger.provider_attempt_id == attempt_id)
+        )
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        stored_reservation = await session.get(
+            BudgetReservation, reservation.reservation_id
+        )
+        attempt = await session.get(ProviderAttempt, attempt_id)
+
+    assert ledger_count == 1
+    assert row is not None and row.billing_status == "known"
+    assert period is not None
+    assert period.reserved_micros == 600
+    assert period.spent_micros == 400
+    assert stored_reservation is not None
+    assert stored_reservation.held_micros == 600
+    assert stored_reservation.consumed_micros == 400
+    assert attempt is not None
+    assert (attempt.status, attempt.latency_ms) == ("success", 12)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_fallback_attempts_are_both_billed_and_finalization_releases_hold(
+    test_env,
+):
+    request_id = await _create_request(test_env)
+    first_attempt = await _create_attempt(request_id, 1)
+    second_attempt = await _create_attempt(request_id, 2)
+    store = PostgreSQLBudgetStore()
+    reservation = await store.try_reserve(
+        _reservation_request(test_env, request_id, cost_micros=100)
+    )
+    assert reservation.reservation_id is not None
+
+    await store.record_attempt_usage(
+        reservation_id=reservation.reservation_id,
+        provider_attempt_id=first_attempt,
+        provider="groq",
+        model="openai/gpt-oss-20b",
+        input_tokens=5,
+        output_tokens=5,
+        cost_micros=40,
+        usage_source="conservative",
+        attempt_status="timeout",
+        latency_ms=100,
+    )
+    assert await store.ensure_attempt_capacity(
+        reservation_id=reservation.reservation_id,
+        required_micros=100,
+    )
+    await store.record_attempt_usage(
+        reservation_id=reservation.reservation_id,
+        provider_attempt_id=second_attempt,
+        provider="openai",
+        model="gpt-5.4-mini",
+        input_tokens=5,
+        output_tokens=5,
+        cost_micros=30,
+        usage_source="actual",
+        attempt_status="success",
+        latency_ms=20,
+    )
+    await store.finalize_reservation(
+        reservation_id=reservation.reservation_id,
+        final_status="completed",
+        gateway_overhead_ms=7,
+    )
+
+    async with AsyncSessionLocal() as session:
+        ledger_rows = list(
             (
                 await session.execute(
-                    select(UsageLedger).where(
-                        UsageLedger.reservation_id == result.reservation_id
-                    )
+                    select(UsageLedger)
+                    .where(UsageLedger.gateway_request_id == request_id)
+                    .order_by(UsageLedger.provider_attempt_id)
                 )
             )
             .scalars()
             .all()
         )
-        assert len(rows) == 1
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        stored_reservation = await session.get(
+            BudgetReservation, reservation.reservation_id
+        )
+        request = await session.get(GatewayRequest, request_id)
+
+    assert [row.cost_micros for row in ledger_rows] == [40, 30]
+    assert period is not None
+    assert (period.reserved_micros, period.spent_micros) == (0, 70)
+    assert stored_reservation is not None
+    assert stored_reservation.final_status == "completed"
+    assert stored_reservation.held_micros == 0
+    assert request is not None
+    assert (request.status, request.gateway_overhead_ms) == ("completed", 7)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_actual_cost_overrun_is_recorded_and_marked_for_reconciliation(test_env):
+    request_id = await _create_request(test_env)
+    attempt_id = await _create_attempt(request_id, 1)
+    store = PostgreSQLBudgetStore()
+    reservation = await store.try_reserve(
+        _reservation_request(test_env, request_id, cost_micros=100)
+    )
+    assert reservation.reservation_id is not None
+
+    await store.record_attempt_usage(
+        reservation_id=reservation.reservation_id,
+        provider_attempt_id=attempt_id,
+        provider="mock",
+        model="gpt-5.4-mini",
+        input_tokens=10,
+        output_tokens=100,
+        cost_micros=150,
+        usage_source="actual",
+        attempt_status="success",
+        latency_ms=10,
+    )
+
+    async with AsyncSessionLocal() as session:
+        stored_reservation = await session.get(
+            BudgetReservation, reservation.reservation_id
+        )
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+    assert stored_reservation is not None
+    assert stored_reservation.reconciliation_state == "needs_reconciliation"
+    assert stored_reservation.reconciliation_reason == "actual_cost_exceeded_hold"
+    assert period is not None
+    assert (period.reserved_micros, period.spent_micros) == (0, 150)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stale_unattempted_reservation_expires_and_releases_hold(test_env):
+    request_id = await _create_request(test_env)
+    store = PostgreSQLBudgetStore()
+    reservation = await store.try_reserve(
+        _reservation_request(test_env, request_id, cost_micros=700)
+    )
+    assert reservation.reservation_id is not None
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            update(BudgetReservation)
+            .where(BudgetReservation.id == reservation.reservation_id)
+            .values(
+                created_at=datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(hours=2)
+            )
+        )
+        await session.commit()
+
+    assert await store.expire_stale_once() == 1
+
+    async with AsyncSessionLocal() as session:
+        stored_reservation = await session.get(
+            BudgetReservation, reservation.reservation_id
+        )
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        request = await session.get(GatewayRequest, request_id)
+    assert stored_reservation is not None
+    assert (stored_reservation.status, stored_reservation.held_micros) == (
+        "expired",
+        0,
+    )
+    assert period is not None and period.reserved_micros == 0
+    assert request is not None and request.status == "failed"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reservation_commit_failure_rolls_back_period_and_row(test_env):
+    request_id = await _create_request(test_env)
+    healthy_store = PostgreSQLBudgetStore()
+    assert await healthy_store.remaining_micros(test_env["tenant_id"]) == 100_000_000
+    failing_store = PostgreSQLBudgetStore(_test_failpoint="before_reservation_commit")
+
+    with pytest.raises(RuntimeError, match="reservation commit"):
+        await failing_store.try_reserve(
+            _reservation_request(test_env, request_id, cost_micros=500)
+        )
+
+    async with AsyncSessionLocal() as session:
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        reservation = await session.scalar(
+            select(BudgetReservation).where(
+                BudgetReservation.gateway_request_id == request_id
+            )
+        )
+    assert period is not None
+    assert (period.reserved_micros, period.spent_micros) == (0, 0)
+    assert reservation is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_attempt_usage_commit_failure_rolls_back_ledger_and_counters(test_env):
+    request_id = await _create_request(test_env)
+    attempt_id = await _create_attempt(request_id, 1)
+    healthy_store = PostgreSQLBudgetStore()
+    reservation = await healthy_store.try_reserve(
+        _reservation_request(test_env, request_id, cost_micros=500)
+    )
+    assert reservation.reservation_id is not None
+    failing_store = PostgreSQLBudgetStore(_test_failpoint="before_attempt_usage_commit")
+
+    with pytest.raises(RuntimeError, match="attempt usage commit"):
+        await failing_store.record_attempt_usage(
+            reservation_id=reservation.reservation_id,
+            provider_attempt_id=attempt_id,
+            provider="mock",
+            model="gpt-5.4-mini",
+            input_tokens=10,
+            output_tokens=20,
+            cost_micros=300,
+            usage_source="actual",
+            attempt_status="success",
+            latency_ms=9,
+        )
+
+    async with AsyncSessionLocal() as session:
+        period = await session.scalar(
+            select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
+        )
+        stored_reservation = await session.get(
+            BudgetReservation, reservation.reservation_id
+        )
+        attempt = await session.get(ProviderAttempt, attempt_id)
+        ledger_count = await session.scalar(
+            select(func.count(UsageLedger.id)).where(
+                UsageLedger.provider_attempt_id == attempt_id
+            )
+        )
+    assert period is not None
+    assert (period.reserved_micros, period.spent_micros) == (500, 0)
+    assert stored_reservation is not None
+    assert (stored_reservation.held_micros, stored_reservation.consumed_micros) == (
+        500,
+        0,
+    )
+    assert attempt is not None
+    assert (attempt.status, attempt.latency_ms) == ("started", None)
+    assert ledger_count == 0

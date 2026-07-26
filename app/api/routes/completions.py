@@ -25,10 +25,7 @@ from app.application.ports.rate_limiter import (
     RateLimitExceeded,
     RateLimitBackendUnavailable,
 )
-from app.application.ports.budget_store import (
-    BudgetBackendUnavailable,
-    DatabaseUnavailable,
-)
+from app.application.ports.budget_store import DatabaseUnavailable
 
 router = APIRouter()
 
@@ -49,10 +46,20 @@ def _api_error(
 
 def _http_error_for_provider_error(exc: ProviderError) -> HTTPException:
     if exc.category != "invalid_request":
-        return _api_error(502, "provider_unavailable", str(exc))
+        return _api_error(
+            502,
+            "provider_unavailable",
+            "The selected model provider could not complete the request",
+        )
 
     if "over budget" in exc.message or "over_budget" in exc.message:
         return _api_error(429, "budget_exceeded", exc.message)
+    if exc.provider != "gateway":
+        return _api_error(
+            400,
+            "invalid_request",
+            "The selected model provider rejected the request",
+        )
     return _api_error(400, "invalid_request", exc.message)
 
 
@@ -93,13 +100,6 @@ async def create_completion(
             503,
             "rate_limiter_unavailable",
             "Rate limiter temporarily unavailable",
-            headers={"Retry-After": "1"},
-        ) from exc
-    except BudgetBackendUnavailable as exc:
-        raise _api_error(
-            503,
-            "budget_backend_unavailable",
-            "Budget authorization is temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
     except ProviderError as exc:
@@ -165,13 +165,6 @@ async def _prepare_stream_response(
             "Rate limiter temporarily unavailable",
             headers={"Retry-After": "1"},
         ) from exc
-    except BudgetBackendUnavailable as exc:
-        raise _api_error(
-            503,
-            "budget_backend_unavailable",
-            "Budget authorization is temporarily unavailable",
-            headers={"Retry-After": "1"},
-        ) from exc
     except ProviderError as exc:
         raise _http_error_for_provider_error(exc) from exc
 
@@ -195,7 +188,8 @@ def _stream_response(
         try:
             async for event in stream_use_case.stream(prepared):
                 if event.type == "done":
-                    continue
+                    yield "data: [DONE]\n\n"
+                    return
 
                 payload: dict[str, Any] = {"type": event.type}
                 if event.content is not None:
@@ -205,12 +199,15 @@ def _stream_response(
                 if event.output_tokens is not None:
                     payload["output_tokens"] = event.output_tokens
                 yield f"data: {json.dumps(payload)}\n\n"
+                if event.type == "error":
+                    return
         except asyncio.CancelledError:
             raise
         except Exception:
             yield 'data: {"type":"error","content":"internal_stream_error"}\n\n'
+            return
 
-        yield "data: [DONE]\n\n"
+        yield ('data: {"type":"error","content":"stream_terminated_unexpectedly"}\n\n')
 
     return StreamingResponse(
         generate(),

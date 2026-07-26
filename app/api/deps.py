@@ -39,7 +39,7 @@ async def get_principal(
             select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.status == "active")
         )
         api_key = result.scalar_one_or_none()
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, OSError) as exc:
         logger.warning(
             "principal_lookup_database_unavailable",
             error_type=type(exc).__name__,
@@ -50,6 +50,7 @@ async def get_principal(
                 "code": "database_unavailable",
                 "message": "Database temporarily unavailable",
             },
+            headers={"Retry-After": "1"},
         ) from exc
 
     if api_key is None:
@@ -86,7 +87,7 @@ def get_completion_use_cases() -> CompletionUseCases:
     from app.infrastructure.providers.base import BaseProvider
     from app.infrastructure.providers.groq import GroqProvider
     from app.infrastructure.providers.openai import OpenAIProvider
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
+    from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
     from app.infrastructure.redis.rate_limiter import RedisRateLimiter
     from app.application.services.budget_authorizer import BudgetAuthorizer
@@ -102,7 +103,7 @@ def get_completion_use_cases() -> CompletionUseCases:
     if settings.openai_api_key:
         providers["openai"] = OpenAIProvider(api_key=settings.openai_api_key)
 
-    budget_store = RedisBudgetStore()
+    budget_store = PostgreSQLBudgetStore()
     token_estimator = TokenEstimator()
     budget_authorizer = BudgetAuthorizer(
         budget_store=budget_store,

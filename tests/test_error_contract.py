@@ -1,6 +1,8 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.api.routes.completions import _http_error_for_provider_error
+from app.domain.provider import ProviderError
 from app.main import app
 
 
@@ -42,3 +44,22 @@ async def test_missing_key_uses_standard_error_and_trace_id() -> None:
     assert response.status_code == 401
     assert response.headers["X-Trace-ID"] == trace_id
     assert_error_payload(response, "authentication_failed", trace_id)
+
+
+def test_provider_invalid_request_does_not_expose_sdk_message() -> None:
+    error = _http_error_for_provider_error(
+        ProviderError(
+            provider="groq",
+            category="invalid_request",
+            message=(
+                "POST https://api.groq.com failed with Authorization: secret-value"
+            ),
+            retryable=False,
+        )
+    )
+
+    assert error.status_code == 400
+    assert error.detail == {
+        "code": "invalid_request",
+        "message": "The selected model provider rejected the request",
+    }

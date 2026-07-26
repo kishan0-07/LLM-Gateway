@@ -35,7 +35,7 @@ async def test_missing_api_key_returns_401():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_invalid_api_key_returns_401():
+async def test_invalid_api_key_returns_401(_check_infra):
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:

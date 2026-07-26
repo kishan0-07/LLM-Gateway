@@ -1,13 +1,20 @@
 import pytest
-import asyncio
 from dataclasses import replace as dataclass_replace
 from decimal import Decimal
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select, update
 from app.main import app
 from app.infrastructure.db.session import AsyncSessionLocal
-from app.infrastructure.db.models import GatewayRequest, ProviderAttempt, BudgetAccount
+from app.infrastructure.db.models import (
+    BudgetAccount,
+    BudgetReservation,
+    GatewayRequest,
+    ProviderAttempt,
+    UsageLedger,
+)
+from app.domain.budget import to_micros
 from app.domain.provider import ProviderStreamEvent
 
 
@@ -32,23 +39,30 @@ async def attempts_for_request(gateway_request_id: int) -> list[ProviderAttempt]
         return list(result.scalars().all())
 
 
-async def reservation_status_for_request(gateway_request_id: int) -> str:
-    from app.infrastructure.db.models import BudgetReservation
-
+async def reservation_for_request(gateway_request_id: int) -> BudgetReservation | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(BudgetReservation).where(
                 BudgetReservation.gateway_request_id == gateway_request_id
             )
         )
-        res = result.scalars().first()
-        return res.status if res else None
+        return result.scalars().first()
+
+
+async def ledger_for_request(gateway_request_id: int) -> list[UsageLedger]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UsageLedger)
+            .where(UsageLedger.gateway_request_id == gateway_request_id)
+            .order_by(UsageLedger.provider_attempt_id)
+        )
+        return list(result.scalars().all())
 
 
 def _make_use_cases(mock_provider, *, rate_limiter=None, budget_store=None):
 
     from app.api.deps import CompletionUseCases
-    from app.infrastructure.redis.budget_store import RedisBudgetStore
+    from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
     from app.infrastructure.redis.circuit_breaker import CircuitBreaker
     from app.infrastructure.redis.rate_limiter import RedisRateLimiter
     from app.infrastructure.observability.event_logger import LogEventSink
@@ -59,7 +73,7 @@ def _make_use_cases(mock_provider, *, rate_limiter=None, budget_store=None):
     from app.application.use_cases.execute_completion import ExecuteCompletion
     from app.application.use_cases.stream_completion import StreamCompletion
 
-    store = budget_store or RedisBudgetStore()
+    store = budget_store or PostgreSQLBudgetStore()
     token_estimator = TokenEstimator()
     budget_authorizer = BudgetAuthorizer(store, store, token_estimator)
     routing = RoutingEngine(
@@ -125,8 +139,10 @@ async def test_1_happy_non_stream(test_env, mock_gateway):
     assert len(attempts) == 1
     assert attempts[0].status == "success"
 
-    res_status = await reservation_status_for_request(req.id)
-    assert res_status == "settled"
+    reservation = await reservation_for_request(req.id)
+    assert reservation is not None
+    assert (reservation.status, reservation.final_status) == ("settled", "completed")
+    assert len(await ledger_for_request(req.id)) == 1
 
 
 # Test 2: Happy path — streaming
@@ -159,8 +175,10 @@ async def test_2_happy_stream(test_env, mock_gateway):
     req = await latest_request_for_trace(trace_id)
     assert req.status == "completed"
 
-    res_status = await reservation_status_for_request(req.id)
-    assert res_status == "settled"
+    reservation = await reservation_for_request(req.id)
+    assert reservation is not None
+    assert (reservation.status, reservation.final_status) == ("settled", "completed")
+    assert len(await ledger_for_request(req.id)) == 1
 
 
 # Test 3: Budget exhausted before provider call
@@ -178,12 +196,6 @@ async def test_3_budget_exhausted_before_provider(test_env, mock_gateway):
             .values(monthly_limit_usd=Decimal("0.000000"))
         )
         await session.commit()
-
-    # Also zero out the Redis budget counter so the Lua script sees limit=0
-    from app.infrastructure.redis.client import get_redis
-
-    r = get_redis()
-    await r.delete(f"budget:{test_env['tenant_id']}:used")
 
     trace_id = "smoke-budget-fail"
     transport = ASGITransport(app=app)
@@ -208,29 +220,31 @@ async def test_3_budget_exhausted_before_provider(test_env, mock_gateway):
     assert len(attempts) == 0
 
 
-# Test 4: Budget exhausted mid-stream
+# Test 4: Provider-reported overrun is preserved for reconciliation
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_4_budget_exhausted_mid_stream(test_env):
+async def test_4_stream_usage_overrun_is_not_lost(test_env):
     from app.infrastructure.providers.mock import MockProvider
     from app.api.deps import get_completion_use_cases
 
-    class BudgetDrainMockProvider(MockProvider):
+    class UsageOverrunMockProvider(MockProvider):
         async def stream(self, model: str, messages: list[dict], *, max_tokens: int):
-            # Yield enough content to cross the 100-token threshold and exceed max_tokens
-            for _ in range(15):
-                yield ProviderStreamEvent(type="delta", content="token " * 10)
-                await asyncio.sleep(0.01)
-
+            assert max_tokens == 1
+            yield ProviderStreamEvent(type="delta", content="ok")
+            yield ProviderStreamEvent(
+                type="usage",
+                input_tokens=10,
+                output_tokens=1_000_000,
+            )
             yield ProviderStreamEvent(type="done")
 
-    mock_provider = BudgetDrainMockProvider()
+    mock_provider = UsageOverrunMockProvider()
     use_cases = _make_use_cases(mock_provider)
     app.dependency_overrides[get_completion_use_cases] = lambda: use_cases
 
-    trace_id = "smoke-budget-mid-stream"
+    trace_id = "smoke-stream-overrun"
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         response = await ac.post(
@@ -239,7 +253,7 @@ async def test_4_budget_exhausted_mid_stream(test_env):
                 "model": "gpt-5.4-mini",
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": True,
-                "max_tokens": 50,
+                "max_tokens": 1,
             },
             headers={"X-API-Key": test_env["api_key"], "X-Trace-ID": trace_id},
         )
@@ -247,14 +261,16 @@ async def test_4_budget_exhausted_mid_stream(test_env):
     app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    lines = response.text.split("\n\n")
-    # Ensure budget_exceeded error event was yielded before DONE
-    assert any("budget_exceeded_mid_stream" in line for line in lines)
+    assert "[DONE]" in response.text
 
     req = await latest_request_for_trace(trace_id)
-    # Finalizer should settle the reservation even on mid-stream abort
-    res_status = await reservation_status_for_request(req.id)
-    assert res_status == "settled"
+    reservation = await reservation_for_request(req.id)
+    ledger = await ledger_for_request(req.id)
+    assert reservation is not None
+    assert reservation.status == "settled"
+    assert reservation.reconciliation_state == "needs_reconciliation"
+    assert len(ledger) == 1
+    assert ledger[0].output_tokens == 1_000_000
 
 
 # Test 5: Provider failure with fallback to another provider
@@ -301,6 +317,12 @@ async def test_5_provider_failure_with_fallback(test_env):
     assert len(attempts) == 2
     assert attempts[0].status == "timeout"
     assert attempts[1].status == "success"
+    ledger = await ledger_for_request(req.id)
+    assert len(ledger) == 2
+    assert [row.usage_source for row in ledger] == ["conservative", "actual"]
+    assert to_micros(response.json()["usage"]["cost_usd"]) == sum(
+        row.cost_micros for row in ledger
+    )
 
 
 # Test 6: Empty output triggers validator failure and fallback
@@ -389,8 +411,13 @@ async def test_7_all_providers_unavailable(test_env):
     assert response.json()["error"]["trace_id"] == trace_id
 
     req = await latest_request_for_trace(trace_id)
-    res_status = await reservation_status_for_request(req.id)
-    assert res_status == "settled"
+    reservation = await reservation_for_request(req.id)
+    assert reservation is not None
+    assert (reservation.status, reservation.final_status) == ("settled", "failed")
+    attempts = await attempts_for_request(req.id)
+    ledger = await ledger_for_request(req.id)
+    assert len(attempts) == 4
+    assert len(ledger) == len(attempts)
 
 
 # Test 8: Rate limit exceeded
@@ -506,7 +533,7 @@ async def test_10_database_unavailable_before_provider(test_env):
     # Patch AsyncSessionLocal only in execute_completion module so auth still works
     with patch(
         "app.application.use_cases.execute_completion.AsyncSessionLocal",
-        side_effect=Exception("Simulated DB connection failure"),
+        side_effect=SQLAlchemyError("Simulated DB connection failure"),
     ):
         with patch.object(
             mock_provider, "complete", wraps=mock_provider.complete
@@ -534,23 +561,14 @@ async def test_10_database_unavailable_before_provider(test_env):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_budget_backend_unavailable_before_provider(test_env):
+async def test_budget_database_unavailable_before_provider(test_env):
     from app.infrastructure.providers.mock import MockProvider
     from app.api.deps import get_completion_use_cases
-    from app.application.ports.budget_store import BudgetBackendUnavailable
+    from app.application.ports.budget_store import DatabaseUnavailable
 
     class UnavailableBudgetStore:
         async def try_reserve(self, request):
-            raise BudgetBackendUnavailable()
-
-        async def settle(self, *args, **kwargs):
-            raise AssertionError("settle must not run without a reservation")
-
-        async def remaining_usd(self, tenant_id: int) -> float:
-            raise AssertionError("streaming was not entered")
-
-        async def expire_stale_once(self) -> int:
-            return 0
+            raise DatabaseUnavailable()
 
     mock_provider = MockProvider(mode="success")
     use_cases = _make_use_cases(
@@ -578,12 +596,10 @@ async def test_budget_backend_unavailable_before_provider(test_env):
                 )
 
             assert response.status_code == 503
-            assert response.json()["error"]["code"] == "budget_backend_unavailable"
+            assert response.json()["error"]["code"] == "database_unavailable"
 
             # Assert no provider calls
             assert spy.call_count == 0
 
-            req = await latest_request_for_trace("test-budget-fail-closed")
-            assert req.status == "budget_backend_unavailable"
         finally:
             app.dependency_overrides.clear()

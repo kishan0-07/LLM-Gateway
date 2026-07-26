@@ -1,13 +1,40 @@
 #!/usr/bin/env python3
 
+import asyncio
 import shutil
 import subprocess
 import sys
+
+from sqlalchemy import text
+
+from app.infrastructure.db.session import engine
+from app.infrastructure.redis.client import close_redis, get_redis
 
 
 def check(label, passed, detail=""):
     print(f"{'pass' if passed else 'failed'} {label}{': ' + detail if detail else ''}")
     return passed
+
+
+async def check_runtime_dependencies() -> list[bool]:
+    checks: list[bool] = []
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        checks.append(check("PostgreSQL reachable", True))
+    except Exception as exc:
+        checks.append(check("PostgreSQL reachable", False, type(exc).__name__))
+
+    try:
+        if not await get_redis().ping():
+            raise RuntimeError("Redis PING did not return success")
+        checks.append(check("Redis reachable", True))
+    except Exception as exc:
+        checks.append(check("Redis reachable", False, type(exc).__name__))
+    finally:
+        await close_redis()
+        await engine.dispose()
+    return checks
 
 
 def main():
@@ -28,6 +55,7 @@ def main():
             checks.append(check(name, True))
         except Exception:
             checks.append(check(name, False))
+    checks.extend(asyncio.run(check_runtime_dependencies()))
     if not all(checks):
         print("\nFAILED.")
         sys.exit(1)

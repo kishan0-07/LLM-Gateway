@@ -71,6 +71,9 @@ jobs:
       - name: Apply migrations
         run: uv run alembic upgrade head
 
+      - name: Check migration drift
+        run: uv run alembic check
+
       - name: Run tests
         run: uv run pytest tests -q
       

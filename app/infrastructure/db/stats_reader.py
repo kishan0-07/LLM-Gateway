@@ -24,7 +24,9 @@ class SQLAlchemyStatsReader:
             ledger_aggregate = (
                 await session.execute(
                     select(
-                        func.count(UsageLedger.id).label("settled_requests"),
+                        func.count(func.distinct(UsageLedger.gateway_request_id)).label(
+                            "settled_requests"
+                        ),
                         func.coalesce(func.sum(UsageLedger.input_tokens), 0).label(
                             "total_input_tokens"
                         ),

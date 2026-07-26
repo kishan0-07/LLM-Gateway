@@ -13,7 +13,7 @@ METADATA = ProviderMetadata(
     name="groq",
     models=["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
     supports_streaming_usage=True,
-    tokenizer_hint="o200k_base",
+    tokenizer_hint="o200k_harmony",
     pricing={
         "openai/gpt-oss-20b": {"input_per_1m": 0.075, "output_per_1m": 0.30},
         "openai/gpt-oss-120b": {"input_per_1m": 0.15, "output_per_1m": 0.60},
@@ -55,17 +55,14 @@ class GroqProvider(BaseProvider):
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         choice = response.choices[0]
-        if not choice.message.content:
-            raise self._wrap_error(
-                "empty_output", "provider returned empty content", retryable=False
-            )
+        content = choice.message.content or ""
 
         usage = response.usage
         if usage is None:
             return ProviderResult(
                 provider="groq",
                 model=model,
-                content=choice.message.content,
+                content=content,
                 input_tokens=0,
                 output_tokens=0,
                 usage_source="estimated",
@@ -75,7 +72,7 @@ class GroqProvider(BaseProvider):
         return ProviderResult(
             provider="groq",
             model=model,
-            content=choice.message.content,
+            content=content,
             input_tokens=usage.prompt_tokens,
             output_tokens=usage.completion_tokens,
             usage_source="actual",

@@ -166,11 +166,6 @@ class BudgetReservation(Base):
     settled_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
-    cache_sync_required: Mapped[bool] = mapped_column(
-        Boolean,
-        server_default=false(),
-        nullable=False,
-    )
     reconciliation_state: Mapped[str] = mapped_column(
         default="none",
         server_default=text("'none'"),

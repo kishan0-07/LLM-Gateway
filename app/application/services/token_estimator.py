@@ -6,9 +6,17 @@ DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
 class TokenEstimator:
     def __init__(self):
-        self._tokenizer_cache = {}
+        self._tokenizer_cache: dict[str, tiktoken.Encoding] = {}
 
-    def _get_encoder(self, tokenizer_hint: str):
+    @staticmethod
+    def _encode_user_text(
+        encoder: tiktoken.Encoding,
+        text: str,
+    ) -> list[int]:
+        """Treat provider control-token spellings as untrusted literal text."""
+        return encoder.encode(text, disallowed_special=())
+
+    def _get_encoder(self, tokenizer_hint: str) -> tiktoken.Encoding:
         if tokenizer_hint not in self._tokenizer_cache:
             try:
                 self._tokenizer_cache[tokenizer_hint] = tiktoken.get_encoding(
@@ -29,7 +37,7 @@ class TokenEstimator:
             num_tokens += 4
             for key, value in message.items():
                 if isinstance(value, str):
-                    num_tokens += len(encoder.encode(value))
+                    num_tokens += len(self._encode_user_text(encoder, value))
                 if key == "name":
                     num_tokens += 1
 
@@ -62,4 +70,5 @@ class TokenEstimator:
     def estimate_output_tokens_for_text(self, *, text: str, model: str) -> int:
         """Encode the complete accumulated text and return exact token count."""
         tokenizer_hint = model_catalog.get(model).tokenizer_hint
-        return len(self._get_encoder(tokenizer_hint).encode(text))
+        encoder = self._get_encoder(tokenizer_hint)
+        return len(self._encode_user_text(encoder, text))

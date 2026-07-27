@@ -30,6 +30,11 @@ from app.application.ports.budget_store import DatabaseUnavailable
 router = APIRouter()
 
 
+def _provider_messages(body: CompletionCreateRequest) -> list[dict[str, Any]]:
+    """Remove absent optional fields before crossing the provider boundary."""
+    return [message.model_dump(exclude_none=True) for message in body.messages]
+
+
 def _api_error(
     status_code: int,
     code: str,
@@ -84,7 +89,7 @@ async def create_completion(
                 api_key_id=principal.api_key_id,
                 trace_id=trace_id,
                 model=body.model,
-                messages=[m.model_dump() for m in body.messages],
+                messages=_provider_messages(body),
                 max_tokens=body.max_tokens,
             )
         )
@@ -147,7 +152,7 @@ async def _prepare_stream_response(
                 api_key_id=principal.api_key_id,
                 trace_id=trace_id,
                 model=body.model,
-                messages=[message.model_dump() for message in body.messages],
+                messages=_provider_messages(body),
                 max_tokens=body.max_tokens,
             )
         )
@@ -176,13 +181,12 @@ async def _prepare_stream_response(
             headers={"Retry-After": "1"},
         ) from exc
 
-    return _stream_response(stream_use_case, prepared, trace_id)
+    return _stream_response(stream_use_case, prepared)
 
 
 def _stream_response(
     stream_use_case: StreamCompletion,
     prepared: PreparedStream,
-    trace_id: str,
 ) -> StreamingResponse:
     async def generate():
         try:
@@ -216,6 +220,5 @@ def _stream_response(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "X-Trace-ID": trace_id,
         },
     )

@@ -1,6 +1,6 @@
 import pytest
 from httpx import Request, Response
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 from openai import BadRequestError, InternalServerError
 
@@ -137,6 +137,8 @@ async def test_openai_stream_normal():
 @pytest.mark.asyncio
 async def test_openai_stream_bad_request():
     provider = OpenAIProvider(api_key="fake-key")
+    failure_log = Mock()
+    provider._log_stream_failure = failure_log
     http_resp = Response(400, request=Request("POST", "https://api.openai.com"))
     exc = BadRequestError("Invalid model parameter", response=http_resp, body=None)
 
@@ -153,3 +155,4 @@ async def test_openai_stream_bad_request():
     assert len(events) == 1
     assert events[0].type == "error"
     assert "invalid_request" in events[0].content
+    failure_log.assert_called_once_with("invalid_request", status_code=400)

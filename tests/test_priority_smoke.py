@@ -167,6 +167,7 @@ async def test_2_happy_stream(test_env, mock_gateway):
 
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
+    assert response.headers.get_list("x-trace-id") == [trace_id]
 
     lines = response.text.split("\n\n")
     assert any("mock " in line for line in lines)
@@ -372,6 +373,23 @@ async def test_6_empty_output_fallback(test_env):
         ("mock-model", "invalid_output"),
         ("gpt-5.4-mini", "success"),
     ]
+    ledger = await ledger_for_request(req.id)
+    reservation = await reservation_for_request(req.id)
+
+    assert reservation is not None
+    assert (reservation.status, reservation.final_status) == (
+        "settled",
+        "completed",
+    )
+    assert reservation.held_micros == 0
+    assert len(ledger) == len(attempts) == 3
+    assert {row.provider_attempt_id for row in ledger} == {
+        attempt.id for attempt in attempts
+    }
+    assert reservation.consumed_micros == sum(row.cost_micros for row in ledger)
+    assert to_micros(response.json()["usage"]["cost_usd"]) == sum(
+        row.cost_micros for row in ledger
+    )
 
 
 # Test 7: All providers unavailable
@@ -471,6 +489,61 @@ async def test_8_rate_limit_exceeded(test_env):
 
     req = await latest_request_for_trace(trace_id_2)
     assert req.status == "rate_limited"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rate_limiter_backend_unavailable_fails_closed_before_provider(
+    test_env,
+):
+    from app.api.deps import get_completion_use_cases
+    from app.application.ports.rate_limiter import RateLimitBackendUnavailable
+    from app.infrastructure.providers.mock import MockProvider
+
+    class UnavailableRateLimiter:
+        async def check(self, tenant_id: int, api_key_id: int) -> None:
+            raise RateLimitBackendUnavailable()
+
+    provider = MockProvider(mode="success")
+    use_cases = _make_use_cases(
+        provider,
+        rate_limiter=UnavailableRateLimiter(),
+    )
+    app.dependency_overrides[get_completion_use_cases] = lambda: use_cases
+    trace_id = "smoke-rate-limiter-unavailable"
+
+    try:
+        with patch.object(provider, "complete", wraps=provider.complete) as spy:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.4-mini",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    headers={
+                        "X-API-Key": test_env["api_key"],
+                        "X-Trace-ID": trace_id,
+                    },
+                )
+
+            assert spy.call_count == 0
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "rate_limiter_unavailable"
+    assert response.headers["Retry-After"] == "1"
+
+    request_row = await latest_request_for_trace(trace_id)
+    assert request_row.status == "rate_limit_unavailable"
+    assert await attempts_for_request(request_row.id) == []
+    assert await ledger_for_request(request_row.id) == []
+    assert await reservation_for_request(request_row.id) is None
 
 
 # Test 9: Missing or invalid API key

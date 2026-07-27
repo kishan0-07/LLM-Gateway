@@ -1,0 +1,16 @@
+services:
+  app:
+    environment:
+      LANGFUSE_ENABLED: "false"
+
+  chaos-tools:
+    image: ${GATEWAY_IMAGE:-llm-gateway:local}
+    profiles: ["tools"]
+    env_file: .env.production
+    working_dir: /app
+    entrypoint: ["python"]
+    volumes:
+      - ./scripts/chaos:/opt/chaos:ro
+    depends_on:
+      postgres:
+        condition: service_healthy

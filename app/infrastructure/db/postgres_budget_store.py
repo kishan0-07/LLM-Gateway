@@ -175,7 +175,6 @@ class PostgreSQLBudgetStore:
                             consumed_micros=0,
                             status="reserved",
                             reconciliation_state="none",
-                            cache_sync_required=False,
                         )
                     )
                     if self._test_failpoint == "before_reservation_commit":

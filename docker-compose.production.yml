@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: llm-gateway:02
+    image: ${GATEWAY_IMAGE:-llm-gateway:local}
     env_file: .env.production
     depends_on:
       postgres: {condition: service_healthy}

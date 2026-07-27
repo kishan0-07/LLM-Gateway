@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Literal
+
+from app.core.logging import logger
 from app.domain.provider import ProviderError, ProviderResult, ProviderStreamEvent
 
 ProviderErrorCategory = Literal[
@@ -19,6 +21,20 @@ class ProviderMetadata:
 
 class BaseProvider(ABC):
     metadata: ProviderMetadata
+
+    def _log_stream_failure(
+        self,
+        category: str,
+        *,
+        status_code: int | None = None,
+    ) -> None:
+        context: dict[str, str | int] = {
+            "provider": self.metadata.name,
+            "category": category,
+        }
+        if status_code is not None:
+            context["status_code"] = status_code
+        logger.warning("provider_stream_failed", **context)
 
     def _wrap_error(
         self, category: ProviderErrorCategory, message: str, retryable: bool

@@ -110,10 +110,13 @@ class OpenAIProvider(BaseProvider):
             yield ProviderStreamEvent(type="done")
 
         except APITimeoutError:
+            self._log_stream_failure("timeout")
             yield ProviderStreamEvent(type="error", content="timeout")
         except RateLimitError:
+            self._log_stream_failure("rate_limited")
             yield ProviderStreamEvent(type="error", content="rate_limited")
         except APIConnectionError:
+            self._log_stream_failure("connection_error")
             yield ProviderStreamEvent(type="error", content="timeout")
         except APIStatusError as exc:
             category = (
@@ -121,4 +124,5 @@ class OpenAIProvider(BaseProvider):
                 if exc.status_code in {400, 404, 422}
                 else "server_error"
             )
+            self._log_stream_failure(category, status_code=exc.status_code)
             yield ProviderStreamEvent(type="error", content=category)

@@ -14,6 +14,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY scripts/chaos/state_probe.py ./scripts/chaos/state_probe.py
 RUN uv sync --frozen --no-dev
 
 FROM python:3.13-slim AS runtime
@@ -27,4 +28,4 @@ COPY --from=builder /app /app
 USER gateway
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --timeout-graceful-shutdown \"${UVICORN_GRACEFUL_SHUTDOWN_SECONDS:-50}\""]

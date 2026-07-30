@@ -10,5 +10,10 @@ __pycache__
 !.env.production.example
 tests
 scratch
-scripts
+artifacts
+recordings
+scripts/*
+!scripts/chaos/
+scripts/chaos/*
+!scripts/chaos/state_probe.py
 docs/chaos/*.log

@@ -26,11 +26,25 @@ services:
       retries: 12
     restart: unless-stopped
 
+  migrate:
+    image: ${GATEWAY_IMAGE:-llm-gateway:local}
+    env_file: .env.production
+    environment:
+      ENVIRONMENT: production
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   app:
     image: ${GATEWAY_IMAGE:-llm-gateway:local}
     env_file: .env.production
+    environment:
+      ENVIRONMENT: production
     depends_on:
-      postgres: {condition: service_healthy}
+      migrate:
+        condition: service_completed_successfully
       redis: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]

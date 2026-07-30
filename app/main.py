@@ -1,9 +1,12 @@
 import asyncio
-from typing import Any, cast
 from contextlib import asynccontextmanager, suppress
+from typing import Any, cast
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.api.deps import get_completion_use_cases, get_principal
 from app.api.errors import (
     http_exception_handler,
     unhandled_exception_handler,
@@ -14,12 +17,14 @@ from app.api.routes import completions, health, stats
 from app.core.config import settings
 from app.core.logging import logger
 from app.domain.auth import Principal
-from app.api.deps import get_completion_use_cases, get_principal
-from app.infrastructure.db.session import close_database
 from app.infrastructure.db.postgres_budget_store import PostgreSQLBudgetStore
+from app.infrastructure.db.session import close_database
+from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
 from app.infrastructure.redis.client import close_redis
 from app.workers.reservation_reconciler import ReservationReconciler
-from app.infrastructure.observability.langfuse_sink import shutdown_langfuse
+
+LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+DEPENDENCY_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 @asynccontextmanager
@@ -62,9 +67,37 @@ async def lifespan(app: FastAPI):
             except TimeoutError:
                 logger.warning("stream_finalizer_shutdown_timed_out")
 
-        await shutdown_langfuse()
-        await close_redis()
-        await close_database()
+        try:
+            await asyncio.wait_for(
+                shutdown_langfuse(),
+                timeout=LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("langfuse_shutdown_timed_out")
+
+        try:
+            dependency_results = await asyncio.wait_for(
+                asyncio.gather(
+                    close_redis(),
+                    close_database(),
+                    return_exceptions=True,
+                ),
+                timeout=DEPENDENCY_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("dependency_shutdown_timed_out")
+        else:
+            for dependency, result in zip(
+                ("redis", "database"),
+                dependency_results,
+                strict=True,
+            ):
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "dependency_shutdown_failed",
+                        dependency=dependency,
+                        error_type=type(result).__name__,
+                    )
         logger.info("shutdown_complete")
 
 

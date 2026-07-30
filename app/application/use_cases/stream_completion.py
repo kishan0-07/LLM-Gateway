@@ -213,6 +213,8 @@ class StreamCompletion:
         request = prepared.request
         attempt_number = 0
         request_cost_micros = 0
+        last_attempt_candidate: RouteCandidate | None = None
+        last_attempt_id: int | None = None
 
         for candidate in prepared.candidates:
             if not await self._circuit.is_available(
@@ -252,6 +254,8 @@ class StreamCompletion:
                 attempt_number=attempt_number,
                 exposure=exposure,
             )
+            last_attempt_candidate = candidate
+            last_attempt_id = attempt_id
 
             parts: list[str] = []
             emitted_content = False
@@ -259,6 +263,9 @@ class StreamCompletion:
             actual_input_tokens: int | None = None
             actual_output_tokens: int | None = None
             started_at = time.perf_counter()
+            chunk_token_upper_bound = 0
+            output_limit_finalization_started = False
+            output_limit_task: asyncio.Task[None] | None = None
 
             try:
                 async with asyncio.timeout(self._stream_total_timeout_seconds):
@@ -271,18 +278,143 @@ class StreamCompletion:
                         provider_events,
                         timeout_seconds=self._stream_idle_timeout_seconds,
                     ):
-                        if event.type == "delta":
-                            content = event.content or ""
-                            if content:
-                                parts.append(content)
-                                emitted_content = True
-                                yield event
-                            continue
-
                         if event.type == "usage":
+                            if (
+                                event.input_tokens is None
+                                or event.output_tokens is None
+                                or event.input_tokens < 0
+                                or event.output_tokens < 0
+                            ):
+                                raise StreamFailure(
+                                    "invalid_provider_usage",
+                                    retryable=False,
+                                    circuit_failure=False,
+                                )
                             actual_input_tokens = event.input_tokens
                             actual_output_tokens = event.output_tokens
+                            if actual_output_tokens > exposure.output_cap:
+                                output_limit_finalization_started = True
+                                output_limit_task = self._track_finalizer(
+                                    self._finalize_output_limit(
+                                        prepared=prepared,
+                                        candidate=candidate,
+                                        attempt_id=attempt_id,
+                                        attempt_count=attempt_number,
+                                        prior_request_cost_micros=request_cost_micros,
+                                        exposure=exposure,
+                                        latency_ms=int(
+                                            (time.perf_counter() - started_at) * 1000
+                                        ),
+                                        provider_events=provider_events,
+                                        actual_input_tokens=actual_input_tokens,
+                                        actual_output_tokens=actual_output_tokens,
+                                    )
+                                )
+                                try:
+                                    async with asyncio.timeout(
+                                        self._finalization_timeout_seconds
+                                    ):
+                                        await asyncio.shield(output_limit_task)
+                                except TimeoutError:
+                                    logger.error(
+                                        "stream_output_limit_finalization_timed_out",
+                                        trace_id=request.trace_id,
+                                        reservation_id=prepared.reservation_id,
+                                    )
+                                yield ProviderStreamEvent(
+                                    type="error",
+                                    content="output_limit_exceeded",
+                                )
+                                return
                             continue
+
+                        if event.type == "delta":
+                            content = event.content or ""
+                            if not content:
+                                continue
+
+                            delta_upper_bound = (
+                                self._token_estimator.count_output_tokens(
+                                    text=content,
+                                    model=candidate.model,
+                                )
+                            )
+                            candidate_upper_bound = (
+                                chunk_token_upper_bound + delta_upper_bound
+                            )
+                            if candidate_upper_bound < exposure.output_cap:
+                                parts.append(content)
+                                chunk_token_upper_bound = candidate_upper_bound
+                                emitted_content = True
+                                yield event
+                                continue
+
+                            current_text = "".join(parts)
+                            candidate_text = current_text + content
+                            bounded_text, _bounded_tokens, limit_reached = (
+                                self._token_estimator.truncate_output_text(
+                                    text=candidate_text,
+                                    model=candidate.model,
+                                    max_tokens=exposure.output_cap,
+                                )
+                            )
+                            if not limit_reached:
+                                parts.append(content)
+                                chunk_token_upper_bound = candidate_upper_bound
+                                emitted_content = True
+                                yield event
+                                continue
+
+                            if not bounded_text.startswith(current_text):
+                                raise StreamFailure(
+                                    "stream_token_boundary_error",
+                                    retryable=False,
+                                    circuit_failure=False,
+                                )
+
+                            safe_delta = bounded_text[len(current_text) :]
+                            parts[:] = [bounded_text]
+                            emitted_content = bool(bounded_text)
+                            output_limit_finalization_started = True
+                            output_limit_task = self._track_finalizer(
+                                self._finalize_output_limit(
+                                    prepared=prepared,
+                                    candidate=candidate,
+                                    attempt_id=attempt_id,
+                                    attempt_count=attempt_number,
+                                    prior_request_cost_micros=request_cost_micros,
+                                    exposure=exposure,
+                                    latency_ms=int(
+                                        (time.perf_counter() - started_at) * 1000
+                                    ),
+                                    provider_events=provider_events,
+                                    actual_input_tokens=actual_input_tokens,
+                                    actual_output_tokens=actual_output_tokens,
+                                )
+                            )
+                            if safe_delta:
+                                yield ProviderStreamEvent(
+                                    type="delta",
+                                    content=safe_delta,
+                                )
+
+                            try:
+                                async with asyncio.timeout(
+                                    self._finalization_timeout_seconds
+                                ):
+                                    await asyncio.shield(output_limit_task)
+                            except TimeoutError:
+                                logger.error(
+                                    "stream_output_limit_finalization_timed_out",
+                                    trace_id=request.trace_id,
+                                    reservation_id=prepared.reservation_id,
+                                )
+
+                            yield ProviderStreamEvent(
+                                type="error",
+                                content="output_limit_exceeded",
+                            )
+                            return
 
                         if event.type == "error":
                             raise self._provider_event_failure(event.content)
@@ -338,9 +470,11 @@ class StreamCompletion:
                     )
                     return
 
-                await self._budget_authorizer.finalize_reservation(
-                    reservation_id=prepared.reservation_id,
-                    final_status="completed",
+                reconciliation_state = (
+                    await self._budget_authorizer.finalize_reservation(
+                        reservation_id=prepared.reservation_id,
+                        final_status="completed",
+                    )
                 )
                 await self._emit_event(
                     event_type="stream_completed",
@@ -353,12 +487,20 @@ class StreamCompletion:
                     cost_micros=request_cost_micros,
                     response_excerpt=content,
                     outcome="success",
+                    reconciliation_state=reconciliation_state,
                 )
                 yield ProviderStreamEvent(type="done")
                 return
 
             except asyncio.CancelledError:
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
+                if output_limit_finalization_started and output_limit_task is not None:
+                    try:
+                        async with asyncio.timeout(self._finalization_timeout_seconds):
+                            await asyncio.shield(output_limit_task)
+                    except (asyncio.CancelledError, TimeoutError):
+                        pass
+                    raise
                 task = self._track_finalizer(
                     self._finalize_cancelled_stream(
                         prepared=prepared,
@@ -448,7 +590,7 @@ class StreamCompletion:
             )
             return
 
-        await self._budget_authorizer.finalize_reservation(
+        reconciliation_state = await self._budget_authorizer.finalize_reservation(
             reservation_id=prepared.reservation_id,
             final_status="failed",
         )
@@ -456,13 +598,14 @@ class StreamCompletion:
             event_type="stream_failed",
             request=request,
             gateway_request_id=prepared.gateway_request_id,
-            candidate=None,
-            attempt_id=None,
+            candidate=last_attempt_candidate,
+            attempt_id=last_attempt_id,
             attempt_count=attempt_number,
             usage=StreamUsage(0, 0, "attempt_aggregate"),
             cost_micros=request_cost_micros,
             response_excerpt="",
             outcome="failed",
+            reconciliation_state=reconciliation_state,
         )
         yield ProviderStreamEvent(
             type="error",
@@ -638,6 +781,148 @@ class StreamCompletion:
                     reservation_id=prepared.reservation_id,
                 )
 
+    async def _close_provider_iterator(
+        self,
+        iterator: AsyncIterator[ProviderStreamEvent],
+        *,
+        trace_id: str,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Close a provider stream best-effort without blocking accounting."""
+        close = getattr(iterator, "aclose", None)
+        if close is None:
+            return
+        try:
+            async with asyncio.timeout(1.0):
+                await close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "provider_stream_close_failed",
+                trace_id=trace_id,
+                provider=provider,
+                model=model,
+                error_type=type(exc).__name__,
+            )
+
+    async def _finalize_output_limit(
+        self,
+        *,
+        prepared: PreparedStream,
+        candidate: RouteCandidate,
+        attempt_id: int,
+        attempt_count: int,
+        prior_request_cost_micros: int,
+        exposure: CandidateExposure,
+        latency_ms: int,
+        provider_events: AsyncIterator[ProviderStreamEvent],
+        actual_input_tokens: int | None,
+        actual_output_tokens: int | None,
+    ) -> None:
+        """Account an output-limit violation without clamping actual usage."""
+        request = prepared.request
+        charged_micros = 0
+        usage = StreamUsage(
+            (
+                actual_input_tokens
+                if actual_input_tokens is not None
+                else exposure.input_tokens
+            ),
+            (
+                actual_output_tokens
+                if actual_output_tokens is not None
+                else exposure.output_cap
+            ),
+            (
+                "actual"
+                if actual_input_tokens is not None and actual_output_tokens is not None
+                else "conservative"
+            ),
+        )
+
+        reconciliation_state: str | None = None
+        try:
+            if actual_input_tokens is not None and actual_output_tokens is not None:
+                charged_micros = await self._budget_authorizer.record_attempt_usage(
+                    reservation_id=prepared.reservation_id,
+                    provider_attempt_id=attempt_id,
+                    provider=candidate.provider.metadata.name,
+                    model=candidate.model,
+                    input_tokens=actual_input_tokens,
+                    output_tokens=actual_output_tokens,
+                    usage_source="actual",
+                    attempt_status="output_limit_exceeded",
+                    latency_ms=latency_ms,
+                )
+            else:
+                charged_micros = (
+                    await self._budget_authorizer.record_conservative_attempt(
+                        reservation_id=prepared.reservation_id,
+                        provider_attempt_id=attempt_id,
+                        provider=candidate.provider.metadata.name,
+                        model=candidate.model,
+                        exposure=exposure,
+                        attempt_status="output_limit_exceeded",
+                        latency_ms=latency_ms,
+                    )
+                )
+
+            reconciliation_state = await self._budget_authorizer.finalize_reservation(
+                reservation_id=prepared.reservation_id,
+                final_status="failed",
+            )
+        except Exception as exc:
+            logger.error(
+                "output_limit_finalization_failed",
+                reservation_id=prepared.reservation_id,
+                error_type=type(exc).__name__,
+            )
+            try:
+                await self._budget_authorizer.mark_needs_reconciliation(
+                    reservation_id=prepared.reservation_id,
+                    reason="output_limit_finalization_failed",
+                )
+            except Exception:
+                logger.error(
+                    "output_limit_reconciliation_marker_failed",
+                    reservation_id=prepared.reservation_id,
+                )
+        finally:
+            await self._close_provider_iterator(
+                provider_events,
+                trace_id=request.trace_id,
+                provider=candidate.provider.metadata.name,
+                model=candidate.model,
+            )
+
+        await self._circuit.record_success(
+            candidate.provider.metadata.name,
+            candidate.model,
+        )
+        await self._emit_event(
+            event_type="stream_output_limit_exceeded",
+            request=request,
+            gateway_request_id=prepared.gateway_request_id,
+            candidate=candidate,
+            attempt_id=attempt_id,
+            attempt_count=attempt_count,
+            usage=usage,
+            cost_micros=prior_request_cost_micros + charged_micros,
+            response_excerpt="",
+            outcome="output_limit_exceeded",
+            reconciliation_state=reconciliation_state,
+        )
+        logger.error(
+            "stream_output_limit_exceeded",
+            trace_id=request.trace_id,
+            provider=candidate.provider.metadata.name,
+            model=candidate.model,
+            provider_attempt_id=attempt_id,
+            authorized_output_cap=exposure.output_cap,
+        )
+
     def _track_finalizer(self, coroutine) -> asyncio.Task[None]:
         task = asyncio.create_task(coroutine)
         self._finalizer_tasks.add(task)
@@ -666,6 +951,7 @@ class StreamCompletion:
         cost_micros: int,
         response_excerpt: str,
         outcome: str,
+        reconciliation_state: str | None = None,
     ) -> None:
         event = {
             "event": event_type,
@@ -683,6 +969,7 @@ class StreamCompletion:
             "attempt_count": attempt_count,
             "failover_count": max(0, attempt_count - 1),
             "outcome": outcome,
+            "reconciliation_state": reconciliation_state,
             "final_provider_attempt_id": attempt_id,
             "prompt_excerpt": sanitize(
                 request.messages[-1].get("content", "") if request.messages else ""

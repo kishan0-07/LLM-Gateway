@@ -1,3 +1,4 @@
+name: gateway-development
 services:
   postgres:
     image: postgres:18-alpine

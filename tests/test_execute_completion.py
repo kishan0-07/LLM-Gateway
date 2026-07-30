@@ -54,6 +54,7 @@ class RecordingBudgetAuthorizer:
 
     async def finalize_reservation(self, **kwargs):
         self.finalizations.append(kwargs)
+        return "none"
 
     async def mark_needs_reconciliation(self, **kwargs):
         self.reconciliation_marks.append(kwargs)
@@ -307,6 +308,10 @@ async def test_all_candidates_failed_settles_error_and_marks_request_failed():
     assert budget.attempt_usage[0]["usage_source"] == "conservative"
     assert budget.finalizations[0]["final_status"] == "failed"
     assert events.events[0]["event"] == "request_failed"
+    assert events.events[0]["provider"] == "groq"
+    assert events.events[0]["model"] == "openai/gpt-oss-20b"
+    assert events.events[0]["final_provider_attempt_id"] == 201
+    assert events.events[0]["reconciliation_state"] == "none"
 
 
 @pytest.mark.asyncio

@@ -83,10 +83,9 @@ async def test_langfuse_sink_enabled_transfers_only_sanitized_data():
     assert metadata["model"] == "gpt-5.4-mini"
 
     updates = obs.updates[0]
-    assert updates["input"] == {
-        "prompt_excerpt": "Contact [EMAIL] instead of jane@example.com"
-    }
+    assert updates["input"] == {"prompt_excerpt": "Contact [EMAIL] instead of [EMAIL]"}
     assert updates["output"] == {"response_excerpt": "Hello [PHONE]"}
+    assert "jane@example.com" not in str(updates)
     assert updates["metadata"]["gatewayTraceId"] == "trace-123"
     assert updates["metadata"]["gatewayRequestId"] == 456
     assert updates["metadata"]["provider"] == "openai"

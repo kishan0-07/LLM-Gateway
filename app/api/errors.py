@@ -95,6 +95,12 @@ async def validation_exception_handler(
         }
         for error in exc.errors()
     ]
+    logger.info(
+        "request_validation_failed",
+        trace_id=_trace_id(request),
+        status_code=422,
+        error_count=len(details),
+    )
     return _error_response(
         request,
         status_code=422,

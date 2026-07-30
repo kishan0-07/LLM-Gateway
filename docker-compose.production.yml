@@ -1,3 +1,4 @@
+name: gateway-production
 services:
   postgres:
     image: postgres:18-alpine

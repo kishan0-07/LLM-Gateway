@@ -381,6 +381,10 @@ async def test_actual_cost_overrun_is_recorded_and_marked_for_reconciliation(tes
         attempt_status="success",
         latency_ms=10,
     )
+    reconciliation_state = await store.finalize_reservation(
+        reservation_id=reservation.reservation_id,
+        final_status="completed",
+    )
 
     async with AsyncSessionLocal() as session:
         stored_reservation = await session.get(
@@ -390,6 +394,7 @@ async def test_actual_cost_overrun_is_recorded_and_marked_for_reconciliation(tes
             select(BudgetPeriod).where(BudgetPeriod.tenant_id == test_env["tenant_id"])
         )
     assert stored_reservation is not None
+    assert reconciliation_state == "needs_reconciliation"
     assert stored_reservation.reconciliation_state == "needs_reconciliation"
     assert stored_reservation.reconciliation_reason == "actual_cost_exceeded_hold"
     assert period is not None

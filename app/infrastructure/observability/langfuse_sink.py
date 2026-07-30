@@ -4,6 +4,7 @@ import asyncio
 from functools import lru_cache
 
 from app.application.ports.event_sink import EventSink
+from app.application.services.sanitizer import sanitize
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -47,6 +48,14 @@ class LangfuseEventSink(EventSink):
                 for k, v in raw_metadata.items()
                 if k in ALLOWED_LANGFUSE_METADATA and v is not None
             }
+            prompt_excerpt = event.get("prompt_excerpt")
+            response_excerpt = event.get("response_excerpt")
+            safe_prompt_excerpt = sanitize(
+                prompt_excerpt if isinstance(prompt_excerpt, str) else ""
+            )
+            safe_response_excerpt = sanitize(
+                response_excerpt if isinstance(response_excerpt, str) else ""
+            )
 
             # Langfuse traces are non-billing, best-effort observability Generation contexts.
             with self._client.start_as_current_observation(
@@ -55,8 +64,8 @@ class LangfuseEventSink(EventSink):
                 model=event.get("model"),
             ) as generation:
                 generation.update(
-                    input={"prompt_excerpt": event.get("prompt_excerpt", "")},
-                    output={"response_excerpt": event.get("response_excerpt", "")},
+                    input={"prompt_excerpt": safe_prompt_excerpt},
+                    output={"response_excerpt": safe_response_excerpt},
                     metadata=metadata,
                     usage_details={
                         "input": event.get("input_tokens", 0),

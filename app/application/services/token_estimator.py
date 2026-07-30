@@ -67,8 +67,35 @@ class TokenEstimator:
             raise ValueError("input exceeds the model context window")
         return cap
 
-    def estimate_output_tokens_for_text(self, *, text: str, model: str) -> int:
-        """Encode the complete accumulated text and return exact token count."""
+    def count_output_tokens(self, *, text: str, model: str) -> int:
         tokenizer_hint = model_catalog.get(model).tokenizer_hint
         encoder = self._get_encoder(tokenizer_hint)
         return len(self._encode_user_text(encoder, text))
+
+    def estimate_output_tokens_for_text(self, *, text: str, model: str) -> int:
+        """Compatibility wrapper for existing accounting code."""
+        return self.count_output_tokens(text=text, model=model)
+
+    def truncate_output_text(
+        self,
+        *,
+        text: str,
+        model: str,
+        max_tokens: int,
+    ) -> tuple[str, int, bool]:
+        """Return a UTF-8-safe prefix, retained token count, and truncation flag."""
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
+
+        tokenizer_hint = model_catalog.get(model).tokenizer_hint
+        encoder = self._get_encoder(tokenizer_hint)
+        token_ids = self._encode_user_text(encoder, text)
+
+        if len(token_ids) <= max_tokens:
+            return text, len(token_ids), False
+
+        bounded_bytes = encoder.decode_bytes(token_ids[:max_tokens])
+        bounded_text = bounded_bytes.decode("utf-8", errors="ignore")
+        retained_tokens = len(self._encode_user_text(encoder, bounded_text))
+
+        return bounded_text, retained_tokens, True

@@ -1,7 +1,9 @@
+import json
+
 import pytest
 from dataclasses import replace as dataclass_replace
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select, update
@@ -262,16 +264,110 @@ async def test_4_stream_usage_overrun_is_not_lost(test_env):
     app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert "[DONE]" in response.text
+    assert '"type": "error"' in response.text
+    assert "output_limit_exceeded" in response.text
+    assert "[DONE]" not in response.text
 
     req = await latest_request_for_trace(trace_id)
     reservation = await reservation_for_request(req.id)
+    attempts = await attempts_for_request(req.id)
     ledger = await ledger_for_request(req.id)
+    assert req.status == "failed"
     assert reservation is not None
     assert reservation.status == "settled"
+    assert reservation.final_status == "failed"
+    assert reservation.held_micros == 0
     assert reservation.reconciliation_state == "needs_reconciliation"
+    assert reservation.reconciliation_reason == "actual_cost_exceeded_hold"
+    assert len(attempts) == 1
+    assert attempts[0].status == "output_limit_exceeded"
     assert len(ledger) == 1
     assert ledger[0].output_tokens == 1_000_000
+    assert ledger[0].usage_source == "actual"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_stream_cannot_emit_past_authorized_output_limit(test_env):
+    from app.api.deps import get_completion_use_cases
+    from app.application.services.token_estimator import TokenEstimator
+    from app.infrastructure.providers.mock import MockProvider
+
+    class VisibleOverrunMockProvider(MockProvider):
+        async def stream(self, model: str, messages: list[dict], *, max_tokens: int):
+            assert max_tokens == 1
+            yield ProviderStreamEvent(
+                type="delta",
+                content="This output deliberately contains several tokens.",
+            )
+            yield ProviderStreamEvent(type="done")
+
+    use_cases = _make_use_cases(VisibleOverrunMockProvider())
+    use_cases.stream._circuit.record_failure = AsyncMock()
+    app.dependency_overrides[get_completion_use_cases] = lambda: use_cases
+    trace_id = "smoke-visible-output-cap"
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "max_tokens": 1,
+            },
+            headers={
+                "X-API-Key": test_env["api_key"],
+                "X-Trace-ID": trace_id,
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    visible_parts: list[str] = []
+    for block in response.text.split("\n\n"):
+        if not block.startswith("data: "):
+            continue
+        raw = block.removeprefix("data: ")
+        if raw == "[DONE]":
+            continue
+        event = json.loads(raw)
+        if event.get("type") == "delta":
+            visible_parts.append(event.get("content", ""))
+
+    visible_text = "".join(visible_parts)
+    estimator = TokenEstimator()
+
+    assert response.status_code == 200
+    assert (
+        estimator.count_output_tokens(
+            text=visible_text,
+            model="gpt-5.4-mini",
+        )
+        <= 1
+    )
+    assert "output_limit_exceeded" in response.text
+    assert "[DONE]" not in response.text
+    assert response.headers.get_list("x-trace-id") == [trace_id]
+
+    req = await latest_request_for_trace(trace_id)
+    reservation = await reservation_for_request(req.id)
+    attempts = await attempts_for_request(req.id)
+    ledger = await ledger_for_request(req.id)
+
+    assert req.status == "failed"
+    assert reservation is not None
+    assert reservation.status == "settled"
+    assert reservation.final_status == "failed"
+    assert reservation.held_micros == 0
+    assert reservation.reconciliation_state == "needs_reconciliation"
+    assert reservation.reconciliation_reason == "provider_usage_unavailable"
+    assert len(attempts) == 1
+    assert attempts[0].status == "output_limit_exceeded"
+    assert len(ledger) == 1
+    assert ledger[0].usage_source == "conservative"
+    use_cases.stream._circuit.record_failure.assert_not_awaited()
 
 
 # Test 5: Provider failure with fallback to another provider

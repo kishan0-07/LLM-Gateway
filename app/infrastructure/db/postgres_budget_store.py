@@ -384,7 +384,7 @@ class PostgreSQLBudgetStore:
         reservation_id: str,
         final_status: FinalStatus,
         gateway_overhead_ms: int | None = None,
-    ) -> None:
+    ) -> str | None:
         now = datetime.datetime.now(datetime.timezone.utc)
         request_status = {
             "completed": "completed",
@@ -403,7 +403,7 @@ class PostgreSQLBudgetStore:
                     if reservation is None:
                         raise DatabaseUnavailable("reservation not found")
                     if reservation.status != "reserved":
-                        return
+                        return reservation.reconciliation_state
 
                     remaining_hold = reservation.held_micros
                     if remaining_hold:
@@ -438,6 +438,8 @@ class PostgreSQLBudgetStore:
                         .where(GatewayRequest.id == reservation.gateway_request_id)
                         .values(**request_values)
                     )
+                    reconciliation_state = reservation.reconciliation_state
+            return reconciliation_state
         except SQLAlchemyError as exc:
             logger.error(
                 "postgres_reservation_finalization_failed",

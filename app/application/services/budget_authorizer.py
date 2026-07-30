@@ -162,10 +162,10 @@ class BudgetAuthorizer:
         reservation_id: str,
         final_status: str,
         gateway_overhead_ms: int | None = None,
-    ) -> None:
+    ) -> str | None:
         if final_status not in {"completed", "failed", "cancelled"}:
             raise ValueError(f"unsupported final status: {final_status}")
-        await self._budget_store.finalize_reservation(
+        return await self._budget_store.finalize_reservation(
             reservation_id=reservation_id,
             final_status=final_status,  # type: ignore[arg-type]
             gateway_overhead_ms=gateway_overhead_ms,

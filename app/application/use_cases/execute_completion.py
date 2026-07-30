@@ -156,6 +156,9 @@ class ExecuteCompletion:
         last_error: ProviderError | None = None
         attempt_number = 0
         budget_blocked_fallback = False
+        last_attempt_id: int | None = None
+        last_attempt_provider = "none"
+        last_attempt_model = request.model
 
         for candidate in candidates:
             if not await self._circuit.is_available(
@@ -200,6 +203,9 @@ class ExecuteCompletion:
                 attempt_number=attempt_number,
                 exposure=exposure,
             )
+            last_attempt_id = attempt_id
+            last_attempt_provider = candidate.provider.metadata.name
+            last_attempt_model = candidate.model
 
             attempt_started_at = time.perf_counter()
             try:
@@ -330,7 +336,7 @@ class ExecuteCompletion:
                 int((time.perf_counter() - started_at) * 1000)
                 - provider_latency_ms_total,
             )
-            await self._budget_authorizer.finalize_reservation(
+            reconciliation_state = await self._budget_authorizer.finalize_reservation(
                 reservation_id=reservation.reservation_id,
                 final_status="completed",
                 gateway_overhead_ms=gateway_overhead_ms,
@@ -352,7 +358,7 @@ class ExecuteCompletion:
                 attempt_count=attempt_number,
                 failover_count=max(0, attempt_number - 1),
                 outcome="success",
-                reconciliation_state="settled",
+                reconciliation_state=reconciliation_state,
                 final_provider_attempt_id=attempt_id,
                 prompt_excerpt=(
                     request.messages[-1].get("content", "") if request.messages else ""
@@ -374,7 +380,7 @@ class ExecuteCompletion:
             0,
             int((time.perf_counter() - started_at) * 1000) - provider_latency_ms_total,
         )
-        await self._budget_authorizer.finalize_reservation(
+        reconciliation_state = await self._budget_authorizer.finalize_reservation(
             reservation_id=reservation.reservation_id,
             final_status="failed",
             gateway_overhead_ms=overhead_ms,
@@ -384,8 +390,8 @@ class ExecuteCompletion:
             trace_id=request.trace_id,
             tenant_id=request.tenant_id,
             gateway_request_id=gateway_request_id,
-            provider="none",
-            model=request.model,
+            provider=last_attempt_provider,
+            model=last_attempt_model,
             input_tokens=0,
             output_tokens=0,
             cost_usd=float(micros_to_decimal(request_cost_micros)),
@@ -394,7 +400,8 @@ class ExecuteCompletion:
             attempt_count=attempt_number,
             failover_count=max(0, attempt_number - 1),
             outcome="failed",
-            reconciliation_state="settled",
+            reconciliation_state=reconciliation_state,
+            final_provider_attempt_id=last_attempt_id,
             prompt_excerpt=(
                 request.messages[-1].get("content", "") if request.messages else ""
             ),

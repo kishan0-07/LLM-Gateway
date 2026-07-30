@@ -1,6 +1,12 @@
+import json
+from unittest.mock import patch
+
 import pytest
+from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient
 
+from app.api.errors import validation_exception_handler
 from app.api.routes.completions import _http_error_for_provider_error
 from app.domain.provider import ProviderError
 from app.main import app
@@ -12,6 +18,41 @@ def assert_error_payload(response, code: str, trace_id: str) -> None:
     assert body["error"]["trace_id"] == trace_id
     assert isinstance(body["error"]["message"], str)
     assert "traceback" not in body["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_validation_error_emits_safe_structured_trace_log() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+            "state": {"trace_id": "wp4-negative-control"},
+        }
+    )
+    validation_error = RequestValidationError(
+        [
+            {
+                "type": "missing",
+                "loc": ("body", "messages"),
+                "msg": "Field required",
+                "input": {"model": "gpt-5.4-mini"},
+            }
+        ]
+    )
+
+    with patch("app.api.errors.logger.info") as log_info:
+        response = await validation_exception_handler(request, validation_error)
+
+    assert response.status_code == 422
+    assert json.loads(response.body)["error"]["code"] == "validation_error"
+    log_info.assert_called_once_with(
+        "request_validation_failed",
+        trace_id="wp4-negative-control",
+        status_code=422,
+        error_count=1,
+    )
 
 
 @pytest.mark.asyncio

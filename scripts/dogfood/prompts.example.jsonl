@@ -1,0 +1,6 @@
+{"id":"math-001","category":"math","stream":false,"prompt":"REPLACE_LOCALLY"}
+{"id":"code-001","category":"coding","stream":true,"prompt":"REPLACE_LOCALLY"}
+{"id":"concept-001","category":"concept","stream":false,"prompt":"REPLACE_LOCALLY"}
+{"id":"multi-001","category":"multi_step","stream":true,"prompt":"REPLACE_LOCALLY"}
+{"id":"short-001","category":"trivial","stream":false,"prompt":"REPLACE_LOCALLY"}
+{"id":"pii-001","category":"pii_sentinel","stream":false,"prompt":"REPLACE_LOCALLY"}

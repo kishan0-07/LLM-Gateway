@@ -27,6 +27,16 @@ class FixedTokenEstimator:
     def estimate_output_tokens_for_text(self, *, text, model):
         return len(text)
 
+    def count_output_tokens(self, *, text, model):
+        return len(text)
+
+    def truncate_output_text(self, *, text, model, max_tokens):
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
+        if len(text) <= max_tokens:
+            return text, len(text), False
+        return text[:max_tokens], max_tokens, True
+
 
 class RecordingBudgetAuthorizer:
     def __init__(self, reservation=ReservationResult(True, "reservation-1")):
@@ -53,10 +63,17 @@ class RecordingBudgetAuthorizer:
 
     async def record_conservative_attempt(self, **kwargs):
         self.attempt_usage.append({**kwargs, "usage_source": "conservative"})
+        self.reconciliation_marks.append(
+            {
+                "reservation_id": kwargs["reservation_id"],
+                "reason": "provider_usage_unavailable",
+            }
+        )
         return kwargs["exposure"].max_cost_micros
 
     async def finalize_reservation(self, **kwargs):
         self.finalizations.append(kwargs)
+        return "none"
 
     async def mark_needs_reconciliation(self, **kwargs):
         self.reconciliation_marks.append(kwargs)
@@ -101,13 +118,17 @@ class ScriptedStreamProvider:
         self.metadata = SimpleNamespace(name=name)
         self._items = list(items)
         self.calls = []
+        self.closed = False
 
     async def stream(self, model, messages, *, max_tokens):
         self.calls.append((model, messages, max_tokens))
-        for item in self._items:
-            if isinstance(item, BaseException):
-                raise item
-            yield item
+        try:
+            for item in self._items:
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            self.closed = True
 
 
 def build_stream_use_case(
@@ -207,6 +228,7 @@ async def test_success_accounts_provider_usage_before_durable_completion():
     ]
     assert budget.finalizations[0]["final_status"] == "completed"
     assert circuit.successes == [("mock", "gpt-5.4-mini")]
+    assert events.events[0]["reconciliation_state"] == "none"
     assert "[EMAIL]" in events.events[0]["prompt_excerpt"]
     assert "jane@example.com" not in events.events[0]["prompt_excerpt"]
 
@@ -410,10 +432,11 @@ async def test_stream_error_never_contains_provider_text():
             ),
         ]
     )
+    sink = CapturingEventSink()
     use_case = build_stream_use_case(
         budget=RecordingBudgetAuthorizer(),
         circuit=RecordingCircuit(),
-        events=CapturingEventSink(),
+        events=sink,
     )
 
     stream_events = [event async for event in use_case.stream(prepared(provider))]
@@ -421,6 +444,12 @@ async def test_stream_error_never_contains_provider_text():
 
     assert public_errors == ["all_providers_unavailable"]
     assert all("groq.com" not in (error or "") for error in public_errors)
+    terminal_event = sink.events[-1]
+    assert terminal_event["event"] == "stream_failed"
+    assert terminal_event["provider"] == "mock"
+    assert terminal_event["model"] == "gpt-5.4-mini"
+    assert terminal_event["final_provider_attempt_id"] == 201
+    assert terminal_event["reconciliation_state"] == "none"
 
 
 @pytest.mark.asyncio
@@ -611,6 +640,294 @@ async def test_stream_event_sink_failure_cannot_remove_done():
 
     assert events[-1].type == "done"
     assert budget.finalizations[0]["final_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_visible_text_stops_at_authorized_output_cap():
+    provider = ScriptedStreamProvider(
+        [
+            ProviderStreamEvent(type="delta", content="x" * 200),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    circuit = RecordingCircuit()
+    sink = CapturingEventSink()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=circuit,
+        events=sink,
+    )
+
+    stream_events = [event async for event in use_case.stream(prepared(provider))]
+    await use_case.drain_finalizers()
+
+    visible_text = "".join(
+        event.content
+        for event in stream_events
+        if event.type == "delta" and event.content
+    )
+    assert visible_text == "x" * 128
+    assert stream_events[-1] == ProviderStreamEvent(
+        type="error",
+        content="output_limit_exceeded",
+    )
+    assert all(event.type != "done" for event in stream_events)
+    assert budget.attempt_usage[0]["attempt_status"] == "output_limit_exceeded"
+    assert budget.attempt_usage[0]["usage_source"] == "conservative"
+    assert budget.reconciliation_marks == [
+        {
+            "reservation_id": "reservation-1",
+            "reason": "provider_usage_unavailable",
+        }
+    ]
+    assert budget.finalizations == [
+        {
+            "reservation_id": "reservation-1",
+            "final_status": "failed",
+        }
+    ]
+    assert circuit.failures == []
+    assert circuit.successes == [("mock", "gpt-5.4-mini")]
+    assert provider.closed is True
+    assert sink.events[-1]["event"] == "stream_output_limit_exceeded"
+    assert sink.events[-1]["reconciliation_state"] == "none"
+    assert sink.events[-1]["response_excerpt"] == ""
+
+
+@pytest.mark.asyncio
+async def test_provider_reported_usage_above_cap_is_stored_unchanged():
+    provider = ScriptedStreamProvider(
+        [
+            ProviderStreamEvent(type="delta", content="short"),
+            ProviderStreamEvent(
+                type="usage",
+                input_tokens=10,
+                output_tokens=500,
+            ),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    circuit = RecordingCircuit()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=circuit,
+        events=CapturingEventSink(),
+    )
+
+    stream_events = [event async for event in use_case.stream(prepared(provider))]
+
+    assert stream_events[-1].content == "output_limit_exceeded"
+    assert all(event.type != "done" for event in stream_events)
+    assert budget.attempt_usage == [
+        {
+            "reservation_id": "reservation-1",
+            "provider_attempt_id": 201,
+            "provider": "mock",
+            "model": "gpt-5.4-mini",
+            "input_tokens": 10,
+            "output_tokens": 500,
+            "usage_source": "actual",
+            "attempt_status": "output_limit_exceeded",
+            "latency_ms": budget.attempt_usage[0]["latency_ms"],
+        }
+    ]
+    assert budget.reconciliation_marks == []
+    assert budget.finalizations[0]["final_status"] == "failed"
+    assert circuit.failures == []
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_gradual_deltas_stop_at_cap_boundary():
+    provider = ScriptedStreamProvider(
+        [
+            *[ProviderStreamEvent(type="delta", content="a") for _ in range(130)],
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=RecordingCircuit(),
+        events=CapturingEventSink(),
+    )
+
+    events = [event async for event in use_case.stream(prepared(provider))]
+
+    visible_text = "".join(
+        event.content for event in events if event.type == "delta" and event.content
+    )
+    assert len(visible_text) == 128
+    assert events[-1].content == "output_limit_exceeded"
+    assert budget.finalizations[0]["final_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_text_exactly_at_cap_completes_normally():
+    provider = ScriptedStreamProvider(
+        [
+            ProviderStreamEvent(type="delta", content="a" * 128),
+            ProviderStreamEvent(type="usage", input_tokens=7, output_tokens=128),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=RecordingCircuit(),
+        events=CapturingEventSink(),
+    )
+
+    events = [event async for event in use_case.stream(prepared(provider))]
+
+    assert events[-1].type == "done"
+    assert budget.attempt_usage[0]["attempt_status"] == "success"
+    assert budget.finalizations[0]["final_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_malformed_usage_is_terminal_without_circuit_failure():
+    provider = ScriptedStreamProvider(
+        [
+            ProviderStreamEvent(type="usage", input_tokens=7),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    circuit = RecordingCircuit()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=circuit,
+        events=CapturingEventSink(),
+    )
+
+    events = [event async for event in use_case.stream(prepared(provider))]
+
+    assert events[-1].content == "invalid_provider_usage"
+    assert budget.attempt_usage[0]["attempt_status"] == "invalid_provider_usage"
+    assert budget.finalizations[0]["final_status"] == "failed"
+    assert circuit.failures == []
+
+
+@pytest.mark.asyncio
+async def test_provider_iterator_close_error_does_not_escape():
+    class CloseFailureIterator:
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    use_case = build_stream_use_case(
+        budget=RecordingBudgetAuthorizer(),
+        circuit=RecordingCircuit(),
+        events=CapturingEventSink(),
+    )
+
+    await use_case._close_provider_iterator(
+        CloseFailureIterator(),
+        trace_id="close-test",
+        provider="mock",
+        model="gpt-5.4-mini",
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_iterator_close_timeout_does_not_escape():
+    class SlowCloseIterator:
+        async def aclose(self):
+            await asyncio.sleep(5)
+
+    use_case = build_stream_use_case(
+        budget=RecordingBudgetAuthorizer(),
+        circuit=RecordingCircuit(),
+        events=CapturingEventSink(),
+    )
+    started_at = asyncio.get_running_loop().time()
+
+    await use_case._close_provider_iterator(
+        SlowCloseIterator(),
+        trace_id="close-timeout-test",
+        provider="mock",
+        model="gpt-5.4-mini",
+    )
+
+    assert asyncio.get_running_loop().time() - started_at < 1.5
+
+
+@pytest.mark.asyncio
+async def test_disconnect_after_final_safe_delta_keeps_output_limit_outcome():
+    provider = ScriptedStreamProvider(
+        [
+            ProviderStreamEvent(type="delta", content="x" * 200),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    budget = RecordingBudgetAuthorizer()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=RecordingCircuit(),
+        events=CapturingEventSink(),
+    )
+    stream = use_case.stream(prepared(provider))
+
+    first = await anext(stream)
+    assert first == ProviderStreamEvent(type="delta", content="x" * 128)
+    await stream.aclose()
+    await use_case.drain_finalizers()
+
+    assert budget.attempt_usage[0]["attempt_status"] == "output_limit_exceeded"
+    assert budget.finalizations == [
+        {
+            "reservation_id": "reservation-1",
+            "final_status": "failed",
+        }
+    ]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_output_limit_fallback_event_keeps_prior_cost_and_attempt_count():
+    first = ScriptedStreamProvider(
+        [ProviderStreamEvent(type="error", content="timeout")],
+        name="groq",
+    )
+    second = ScriptedStreamProvider(
+        [ProviderStreamEvent(type="delta", content="x" * 200)],
+        name="openai",
+    )
+    original = prepared(first)
+    stream = PreparedStream(
+        request=original.request,
+        gateway_request_id=original.gateway_request_id,
+        reservation_id=original.reservation_id,
+        output_cap=original.output_cap,
+        candidates=[
+            RouteCandidate(first, "openai/gpt-oss-20b", 0),
+            RouteCandidate(second, "gpt-5.4-mini", 1),
+        ],
+    )
+    budget = RecordingBudgetAuthorizer()
+    sink = CapturingEventSink()
+    use_case = build_stream_use_case(
+        budget=budget,
+        circuit=RecordingCircuit(),
+        events=sink,
+    )
+    use_case._start_provider_attempt = AsyncMock(side_effect=[201, 202])
+
+    events = [event async for event in use_case.stream(stream)]
+
+    assert events[-1].content == "output_limit_exceeded"
+    output_event = sink.events[-1]
+    assert output_event["event"] == "stream_output_limit_exceeded"
+    assert output_event["attempt_count"] == 2
+    assert output_event["failover_count"] == 1
+    assert output_event["cost_usd"] == "0.000200"
+    assert output_event["reconciliation_state"] == "none"
+    assert [row["attempt_status"] for row in budget.attempt_usage] == [
+        "provider_stream_failed",
+        "output_limit_exceeded",
+    ]
 
 
 def test_get_completion_use_cases_is_cached():

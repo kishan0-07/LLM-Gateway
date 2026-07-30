@@ -44,14 +44,6 @@ class TokenEstimator:
         num_tokens += 3
         return num_tokens
 
-    def estimate_max_output_tokens(
-        self, model: str, requested_max_tokens: int | None
-    ) -> int:
-        info = model_catalog.get(model)
-        if requested_max_tokens is not None:
-            return min(requested_max_tokens, info.context_limit)
-        return min(1024, info.context_limit)
-
     def output_cap(
         self, messages: list[dict], model: str, requested: int | None
     ) -> int:

@@ -1,6 +1,14 @@
 # Dogfood Summary — GatewayLLM
 
 - Application SHA: `56e9852f7971b5ea9b5a213b6cbe5fc585b0adc3`
+- Environment: local production-shaped GatewayLLM stack
+- Collection date: 2026-07-30 (UTC and IST calendar date)
+- Exact collection window: not retained in the redacted result rows
+- Base URL class: local; no public Railway result is implied
+- Provider/model distribution:
+  - Groq / `openai/gpt-oss-20b`: 35 final routes
+  - OpenAI / `gpt-5.4-mini`: 15 final routes
+- Raw artifact location: ignored `artifacts/dogfood/`
 
 ## Overview
 

@@ -26,7 +26,9 @@ class GroqProvider(BaseProvider):
     metadata = METADATA
 
     def __init__(self, api_key: str):
-        self._client = AsyncGroq(api_key=api_key)
+        # GatewayLLM owns retries and records one durable row per attempt.
+        # Hidden SDK retries would make external calls invisible to accounting.
+        self._client = AsyncGroq(api_key=api_key, max_retries=0)
 
     def _status_error(self, exc: APIStatusError) -> ProviderError:
         if exc.status_code in {400, 404, 422}:

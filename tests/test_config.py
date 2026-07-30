@@ -11,6 +11,7 @@ def make_settings(**overrides: object) -> Settings:
         "redis_url": "",
         "groq_api_key": "",
         "openai_api_key": "",
+        "rate_limit_redis_failure_mode": "fail_open",
         "langfuse_enabled": False,
         "langfuse_public_key": None,
         "langfuse_secret_key": None,
@@ -125,9 +126,21 @@ def test_each_production_provider_alternative_is_accepted(
         redis_url="rediss://redis.internal/0",
         groq_api_key=groq_api_key,
         openai_api_key=openai_api_key,
+        rate_limit_redis_failure_mode="fail_closed",
     )
 
     assert configured.environment == "production"
+
+
+def test_production_requires_fail_closed_rate_limiting() -> None:
+    with pytest.raises(ValidationError, match="must be fail_closed"):
+        make_settings(
+            environment="production",
+            database_url="postgresql://user:pass@db/gateway",
+            redis_url="redis://redis:6379/0",
+            groq_api_key="groq-secret",
+            rate_limit_redis_failure_mode="fail_open",
+        )
 
 
 @pytest.mark.parametrize(

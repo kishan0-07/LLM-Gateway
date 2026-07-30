@@ -17,13 +17,18 @@ from app.infrastructure.db.session import AsyncSessionLocal
 
 async def snapshot(trace_id: str) -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
-        request = await session.scalar(
-            select(GatewayRequest)
-            .where(GatewayRequest.trace_id == trace_id)
-            .order_by(GatewayRequest.id.desc())
+        requests = list(
+            await session.scalars(
+                select(GatewayRequest)
+                .where(GatewayRequest.trace_id == trace_id)
+                .order_by(GatewayRequest.id)
+            )
         )
-        if request is None:
+        if not requests:
             return {"request": None}
+        if len(requests) != 1:
+            raise RuntimeError(f"trace_id matched {len(requests)} gateway requests")
+        request = requests[0]
 
         reservation = await session.scalar(
             select(BudgetReservation).where(
@@ -74,6 +79,74 @@ def assert_mode(state: dict[str, Any], mode: str) -> dict[str, Any]:
             "request_status": request.status,
             "provider_attempts": 0,
             "ledger_rows": 0,
+        }
+
+    if mode == "inspect":
+        # Read-only, allowlisted inspection. Never add prompts, responses,
+        # credentials, connection values, or raw provider errors.
+        attempt_ids = {attempt.id for attempt in attempts}
+        ledger_attempt_ids = {
+            row.provider_attempt_id
+            for row in ledger
+            if row.provider_attempt_id is not None
+        }
+        ledger_cost_micros = sum(row.cost_micros for row in ledger)
+        return {
+            "request_id": request.id,
+            "request_status": request.status,
+            "is_stream": request.is_stream,
+            "gateway_overhead_ms": request.gateway_overhead_ms,
+            "reservation_status": (
+                reservation.status if reservation is not None else None
+            ),
+            "reservation_final_status": (
+                reservation.final_status if reservation is not None else None
+            ),
+            "reservation_held_micros": (
+                reservation.held_micros if reservation is not None else None
+            ),
+            "reservation_consumed_micros": (
+                reservation.consumed_micros if reservation is not None else None
+            ),
+            "reconciliation_state": (
+                reservation.reconciliation_state if reservation is not None else None
+            ),
+            "reconciliation_reason": (
+                reservation.reconciliation_reason if reservation is not None else None
+            ),
+            "attempts": [
+                {
+                    "attempt_id": attempt.id,
+                    "attempt_number": attempt.attempt_number,
+                    "provider": attempt.provider,
+                    "model": attempt.model,
+                    "status": attempt.status,
+                    "latency_ms": attempt.latency_ms,
+                    "authorized_cost_micros": attempt.authorized_cost_micros,
+                }
+                for attempt in attempts
+            ],
+            "ledger": [
+                {
+                    "ledger_id": row.id,
+                    "attempt_id": row.provider_attempt_id,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "input_tokens": row.input_tokens,
+                    "output_tokens": row.output_tokens,
+                    "usage_source": row.usage_source,
+                    "billing_status": row.billing_status,
+                    "cost_micros": row.cost_micros,
+                }
+                for row in ledger
+            ],
+            "accounting_complete": (
+                len(ledger) == len(attempts) and ledger_attempt_ids == attempt_ids
+            ),
+            "cost_matches_reservation": (
+                reservation is not None
+                and reservation.consumed_micros == ledger_cost_micros
+            ),
         }
 
     assert mode == "disconnect"
@@ -156,7 +229,7 @@ async def main() -> None:
     parser.add_argument("--trace-id", required=True)
     parser.add_argument(
         "--mode",
-        choices=["rate-limit", "database-preflight", "disconnect"],
+        choices=["rate-limit", "database-preflight", "disconnect", "inspect"],
         required=True,
     )
     parser.add_argument("--wait-seconds", type=float, default=20.0)

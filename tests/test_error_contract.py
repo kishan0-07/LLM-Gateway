@@ -104,3 +104,20 @@ def test_provider_invalid_request_does_not_expose_sdk_message() -> None:
         "code": "invalid_request",
         "message": "The selected model provider rejected the request",
     }
+
+
+def test_gateway_wide_provider_unavailability_is_503() -> None:
+    error = _http_error_for_provider_error(
+        ProviderError(
+            provider="gateway",
+            category="server_error",
+            message="no provider candidates are configured",
+            retryable=True,
+        )
+    )
+
+    assert error.status_code == 503
+    assert error.detail == {
+        "code": "provider_unavailable",
+        "message": "All configured providers are currently unavailable",
+    }

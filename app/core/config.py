@@ -74,6 +74,13 @@ class Settings(BaseSettings):
             self.groq_api_key or self.openai_api_key
         ):
             raise ValueError("at least one provider API key is required in production")
+        if (
+            self.environment == "production"
+            and self.rate_limit_redis_failure_mode != "fail_closed"
+        ):
+            raise ValueError(
+                "RATE_LIMIT_REDIS_FAILURE_MODE must be fail_closed in production"
+            )
         return self
 
 

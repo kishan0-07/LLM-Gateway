@@ -1,11 +1,19 @@
-import pytest
-from httpx import Request, Response
-from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
-from groq import BadRequestError, InternalServerError
+from unittest.mock import AsyncMock, Mock, patch
 
-from app.infrastructure.providers.groq import GroqProvider
+from groq import BadRequestError, InternalServerError
+from httpx import Request, Response
+import pytest
+
 from app.domain.provider import ProviderError, ProviderStreamEvent
+from app.infrastructure.providers.groq import GroqProvider
+
+
+def test_groq_sdk_retries_are_disabled() -> None:
+    with patch("app.infrastructure.providers.groq.AsyncGroq") as client_type:
+        GroqProvider("test-key")
+
+    client_type.assert_called_once_with(api_key="test-key", max_retries=0)
 
 
 def completion_response(content="answer", input_tokens=4, output_tokens=6):

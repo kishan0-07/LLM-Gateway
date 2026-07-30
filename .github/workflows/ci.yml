@@ -46,13 +46,13 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
 
@@ -60,13 +60,16 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint
-        run: uv run ruff check app tests scripts scratch
+        run: uv run ruff check app tests scripts scratch load
 
       - name: Format check
-        run: uv run ruff format --check app tests scripts scratch 
+        run: uv run ruff format --check app tests scripts scratch load
 
-      - name: Type-check gateway policy core
-        run: uv run mypy app/domain app/application/ports app/application/services app/application/use_cases
+      - name: Type-check application
+        run: uv run mypy app
+
+      - name: Compile Python sources
+        run: uv run python -m compileall -q app tests scripts scratch load
 
       - name: Apply migrations
         run: uv run alembic upgrade head
@@ -76,11 +79,11 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests -q
-      
+
   container-build:
     needs: quality-and-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image on case-sensitive filesystem
         run: docker build --file Dockerfile --tag llm-gateway:${{ github.sha }} .

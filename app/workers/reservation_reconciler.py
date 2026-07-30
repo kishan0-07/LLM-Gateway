@@ -44,7 +44,6 @@ class ReservationReconciler:
                     logger.exception(
                         "reservation_reconciler_iteration_failed",
                         error_type=type(exc).__name__,
-                        error=str(exc),
                     )
 
                 try:

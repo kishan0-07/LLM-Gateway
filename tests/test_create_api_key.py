@@ -445,7 +445,7 @@ def test_cli_success_prints_raw_key_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    raw_key = "sk-gw-one-time-secret"
+    raw_key = "example-one-time-key"
     create = AsyncMock(return_value=raw_key)
     monkeypatch.setattr(cli_module, "create_api_key", create)
 

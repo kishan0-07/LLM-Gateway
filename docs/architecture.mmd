@@ -1,0 +1,65 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "background": "#ffffff",
+    "primaryTextColor": "#0f172a",
+    "lineColor": "#64748b",
+    "fontFamily": "Inter, Segoe UI, Arial, sans-serif",
+    "fontSize": "17px",
+    "clusterBkg": "#f8fafc",
+    "clusterBorder": "#cbd5e1"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 44,
+    "rankSpacing": 72,
+    "padding": 18
+  }
+}}%%
+flowchart LR
+    subgraph client ["Clients"]
+        consumer["Application or CLI"]
+    end
+
+    subgraph gateway ["Ingress"]
+        edge["HTTPS ingress (Railway edge or local Nginx)"]
+    end
+
+    subgraph service ["Application service"]
+        app["GatewayLLM FastAPI modular monolith"]
+    end
+
+    subgraph datastore ["State stores"]
+        postgres[("PostgreSQL (identity, financial and audit authority)")]
+        redis[("Redis (rate-limit and circuit coordination only)")]
+    end
+
+    subgraph external ["External systems"]
+        groq["Groq"]
+        openai["OpenAI"]
+        langfuse["Langfuse (optional)"]
+    end
+
+    consumer -->|"JSON or SSE over HTTPS"| edge
+    edge -->|"Forwards request"| app
+    app -->|"Auth, reserve, account, stats and reconcile"| postgres
+    app -->|"Rate limits and provider circuit state"| redis
+    app -.->|"Groq: complete or stream"| groq
+    app -.->|"OpenAI: complete or stream"| openai
+    app -.->|"Sanitized telemetry"| langfuse
+
+    classDef clientNode fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a;
+    classDef edgeNode fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0f172a;
+    classDef appNode fill:#cffafe,stroke:#0891b2,stroke-width:3px,color:#0f172a;
+    classDef postgresNode fill:#d1fae5,stroke:#059669,stroke-width:3px,color:#0f172a;
+    classDef redisNode fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a;
+    classDef providerNode fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a;
+    classDef observeNode fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#0f172a;
+
+    class consumer clientNode;
+    class edge edgeNode;
+    class app appNode;
+    class postgres postgresNode;
+    class redis redisNode;
+    class groq,openai providerNode;
+    class langfuse observeNode;

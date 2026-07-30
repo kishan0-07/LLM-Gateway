@@ -13,11 +13,16 @@
 
 **Layer 1 of an Adaptive LLM Inference Platform**
 
+**Deployment status:** local production shape verified ·
+[Railway live smoke pending](docs/evidence/final-smoke.md)
+
 [Quick start](#quick-start-for-forkers) ·
 [Architecture](#architecture) ·
 [API reference](#api-reference) ·
 [Design decisions](#design-decisions) ·
-[Verification](#verification-and-chaos-testing)
+[Verification](#verification-and-chaos-testing) ·
+[Beginner deep dive](docs/GATEWAYLLM_BEGINNER_DEEP_DIVE.md) ·
+[Code walkthrough](docs/GATEWAYLLM_CODE_WALKTHROUGH_FOR_BEGINNERS.md)
 
 </div>
 
@@ -95,60 +100,14 @@ own the complete request lifecycle, application ports define infrastructure
 contracts, and adapters implement PostgreSQL, Redis, and provider-specific
 behavior.
 
-```mermaid
-flowchart TB
-    Client["Client application"]
+![GatewayLLM production request, authority, and evidence flow](docs/architecture.png)
 
-    subgraph Gateway["GatewayLLM · FastAPI modular monolith"]
-        Edge["HTTP route + trace ID"]
-        Auth["API-key authentication"]
-        Validate["Request, model, context and token validation"]
-        RequestRow["Create gateway request"]
-        RateLimit["Atomic tenant + API-key rate limit"]
-        Reserve["Authorize and reserve budget"]
-        Route["Build provider route plan"]
-        Circuit["Check provider circuit"]
-        Attempt["Start provider attempt"]
-        ProviderCall["Call or stream provider"]
-        OutputCheck["Validate provider output"]
-        Ledger["Record attempt usage"]
-        Finalize["Finalize reservation and request"]
-        Events["Sanitized logs and events"]
-        Reconciler["Reservation reconciler"]
-    end
-
-    Postgres[("PostgreSQL<br/>financial and audit truth")]
-    Redis[("Redis<br/>coordination and provider health")]
-    Groq["Groq"]
-    OpenAI["OpenAI"]
-    Langfuse["Langfuse<br/>(optional)"]
-
-    Client --> Edge --> Auth
-    Auth --> Postgres
-    Auth --> Validate --> RequestRow
-    RequestRow --> Postgres
-    RequestRow --> RateLimit
-    RateLimit <--> Redis
-    RateLimit --> Reserve
-    Reserve <--> Postgres
-    Reserve --> Route --> Circuit
-    Circuit <--> Redis
-    Circuit --> Attempt
-    Attempt --> Postgres
-    Attempt --> ProviderCall
-    ProviderCall --> Groq
-    ProviderCall --> OpenAI
-    Groq --> OutputCheck
-    OpenAI --> OutputCheck
-    OutputCheck --> Ledger
-    Ledger --> Postgres
-    Ledger --> Finalize
-    Finalize --> Postgres
-    Finalize --> Events
-    Events --> Langfuse
-    Finalize --> Client
-    Reconciler <--> Postgres
-```
+The editable Mermaid source is
+[`docs/architecture.mmd`](docs/architecture.mmd). The diagram intentionally
+shows deployable and external boundaries only. Gateway internals remain modules
+inside one FastAPI process and are explained by the request-lifecycle sequence
+below. Solid arrows represent request, financial, or coordination paths;
+dotted arrows represent provider and derived-observability integrations.
 
 ### Data ownership
 
@@ -229,9 +188,13 @@ These invariants drive the implementation and tests:
 - Provider exception text, prompts, responses, and API keys are not exposed in
   public errors.
 - Redis failure behavior is explicit: local development may fail open for rate
-  limiting, while production should fail closed.
+  limiting, while production configuration is rejected unless it fails closed.
 
 ## Design decisions
+
+The concise rationale is below. The complete decision record, including
+consequences and exact evidence for twelve architectural choices, is in
+[`decisions.md`](decisions.md).
 
 ### 1. The use case owns the lifecycle
 
@@ -255,7 +218,9 @@ financial authorization. Losing Redis must not erase spend history.
 ### 4. Provider attempts—not only successful requests—are billable
 
 A timeout or unusable response can still consume provider tokens. Accounting is
-attempt-scoped so fallback does not hide the cost of failed work.
+attempt-scoped so fallback does not hide the cost of failed work. Provider SDK
+auto-retries are disabled; GatewayLLM owns retry/failover decisions so every
+external call has an explicit durable attempt.
 
 ### 5. Estimates reserve; provider usage settles
 
@@ -313,9 +278,12 @@ Do not commit `.env`.
 ### 2. Start PostgreSQL and Redis
 
 ```powershell
-docker compose up -d postgres redis
+docker compose up -d --wait postgres redis
 docker compose ps
 ```
+
+`--wait` matters on a fresh volume: it prevents the following preflight from
+racing PostgreSQL initialization.
 
 ### 3. Verify dependencies and migrate
 
@@ -328,11 +296,15 @@ uv run alembic current
 ### 4. Create a development tenant and key
 
 ```powershell
-uv run python scripts/seed_user.py
+uv run python -m app.cli.create_api_key `
+  --tenant-name local-demo `
+  --monthly-limit-usd 5.00
 ```
 
 The command prints the API key once. Save it locally and do not commit or paste
-it into logs, screenshots, issues, or documentation.
+it into logs, screenshots, issues, or documentation. The command refuses to
+silently create a second active key for an existing tenant; use its explicit
+rotation flow for that operation.
 
 ### 5. Run the gateway
 
@@ -357,14 +329,14 @@ Interactive API documentation is available at:
 To run the application and its dependencies in Compose:
 
 ```powershell
-docker compose build app
-docker compose up -d --force-recreate
+docker compose up -d --build --wait
 docker compose ps
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-The development seed script still runs from the host because scripts are not
-copied into the runtime image.
+Migrations run in the one-shot `migrate` service before the app is activated.
+The API-key CLI is part of the installed `app` package and can be run from the
+host or an authenticated container shell.
 
 ## Configuration
 
@@ -377,12 +349,14 @@ from `.env`; the production-shaped Compose stack uses `.env.production`.
 | `REDIS_URL` | empty | Redis connection URL |
 | `GROQ_API_KEY` | empty | Enables the Groq adapter |
 | `OPENAI_API_KEY` | empty | Enables the OpenAI adapter |
+| `ENVIRONMENT` | `development` | `development`, `test`, or `production`; production validates required dependencies/provider keys |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding rate-limit window |
 | `RATE_LIMIT_TENANT_REQUESTS` | `120` | Tenant requests per window |
 | `RATE_LIMIT_API_KEY_REQUESTS` | `60` | API-key requests per window |
 | `RATE_LIMIT_REDIS_FAILURE_MODE` | `fail_open` | `fail_open` or `fail_closed` |
 | `RESERVATION_RECONCILE_INTERVAL_SECONDS` | `60` | Stale-reservation scan interval |
 | `SHUTDOWN_GRACE_SECONDS` | `10` | Bounded worker/finalizer shutdown window |
+| `UVICORN_GRACEFUL_SHUTDOWN_SECONDS` | `50` in the container command | Server grace period; keep below the platform drain window |
 | `LANGFUSE_ENABLED` | `false` | Enables optional Langfuse export |
 | `LANGFUSE_PUBLIC_KEY` | empty | Required when Langfuse is enabled |
 | `LANGFUSE_SECRET_KEY` | empty | Required when Langfuse is enabled |
@@ -491,7 +465,7 @@ curl --header "X-API-Key: YOUR_DEVELOPMENT_KEY" \
 ```
 
 The response reports request totals, settled requests, input/output tokens,
-total cost, failover count, and average measured gateway overhead.
+total cost, failover count, and measured average/p50/p95/p99 gateway overhead.
 
 ### Error contract
 
@@ -550,8 +524,10 @@ a real billing environment.
 - Provider streaming failures log only provider, normalized category, and
   status code when available.
 - Raw provider exception bodies are not written into streaming failure logs.
-- Prompt and response excerpts pass through email, phone, and SSN redaction and
-  are truncated before event emission.
+- Structlog events are metadata-only; prompt and response excerpts are removed
+  before application logging.
+- When Langfuse is explicitly enabled, excerpts pass through email, phone, and
+  SSN redaction and are truncated before export.
 - Langfuse is optional and disabled by default. Its failure must not affect
   financial accounting.
 
@@ -567,12 +543,12 @@ a real billing environment.
 Start local PostgreSQL and Redis, then run the same core checks as CI:
 
 ```powershell
-docker compose up -d postgres redis
+docker compose up -d --wait postgres redis
 
-uv run ruff check app tests scripts scratch
-uv run ruff format --check app tests scripts scratch
-uv run mypy app/domain app/application/ports app/application/services app/application/use_cases
-uv run python -m compileall -q app tests scripts scratch
+uv run ruff check app tests scripts scratch load
+uv run ruff format --check app tests scripts scratch load
+uv run mypy app
+uv run python -m compileall -q app tests scripts scratch load
 uv run alembic upgrade head
 uv run alembic check
 uv run alembic heads
@@ -580,7 +556,7 @@ uv run pytest tests -q
 docker compose config --quiet
 ```
 
-The current local baseline is **108 tests** across unit, contract, integration,
+The current clean-room baseline is **265 tests** across unit, contract, integration,
 streaming, accounting, rate-limit, lifecycle, and priority-smoke behavior.
 
 ### Priority chaos matrix
@@ -601,16 +577,32 @@ with fresh tenants and trace IDs.
 See [`scripts/chaos/README.md`](scripts/chaos/README.md) for the isolated,
 destructive test procedure.
 
-> [!NOTE]
-> No 1,000-concurrency or p99 performance result is published yet. The gateway
-> records average overhead, but throughput and percentile claims will be added
-> only after a reproducible load test and real dogfooding dataset exist.
+### Measured evidence
+
+The reconciled local dogfood run contains 50 successful requests, 65 provider
+attempts, 65 usage-ledger rows, zero accounting mismatches, zero active holds,
+15 failovers, and `$0.028858` of accounted usage. Its measured non-stream
+gateway overhead was p50 `32.5 ms`, p95 `54.3 ms`, and p99 `57.9 ms`.
+
+These are dataset measurements, not an SLO or a hosted-capacity claim. Client
+latency and stream TTFT/E2E are labeled separately in
+[`docs/evidence/dogfood-summary.md`](docs/evidence/dogfood-summary.md).
+
+The Locust harness validates both the normalized JSON contract and SSE through
+`[DONE]`, but capacity stages are still pending an isolated environment,
+declared provider spend/quota, connection ceilings, and Railway plan. No
+1,000-concurrency result is claimed. See:
+
+- [`Demo rehearsal`](docs/evidence/demo-run.md)
+- [`Langfuse review`](docs/evidence/langfuse-review.md)
+- [`Load-test status`](docs/evidence/load-test.md)
+- [`Railway smoke status`](docs/evidence/final-smoke.md)
 
 ## Production-shaped Docker stack
 
 The production Compose file uses PostgreSQL and Redis without host ports,
-starts the exact tagged application image, applies migrations on startup, and
-places Nginx in front of the gateway.
+applies migrations in a one-shot service before app activation, starts the
+exact tagged application image, and places Nginx in front of the gateway.
 
 ```powershell
 Copy-Item .env.production.example .env.production
@@ -623,7 +615,19 @@ docker compose `
   -p gateway-production `
   --env-file .env.production `
   -f docker-compose.production.yml `
-  up -d
+  up -d --wait postgres redis
+
+docker compose `
+  -p gateway-production `
+  --env-file .env.production `
+  -f docker-compose.production.yml `
+  run --rm migrate
+
+docker compose `
+  -p gateway-production `
+  --env-file .env.production `
+  -f docker-compose.production.yml `
+  up -d --wait app nginx
 
 docker compose `
   -p gateway-production `
@@ -649,24 +653,24 @@ docker compose `
 ### Implemented
 
 - API keys are generated with cryptographically secure randomness by the
-  development tooling.
+  operator CLI, which also supports guarded rotation.
 - Only the API-key hash and a non-secret prefix are stored.
 - Authentication resolves a tenant and exact API-key identity.
 - Tenant and API-key rate limits are checked atomically.
-- Production configuration can fail closed when Redis is unavailable.
+- Production configuration must fail closed when Redis is unavailable.
 - Provider calls require successful database authentication and budget
   authorization.
 - Public errors use normalized messages and trace IDs instead of raw provider
   or database exception text.
-- Prompt and response excerpts are redacted and truncated before observability
-  emission.
+- Application logs contain metadata only. Optional Langfuse excerpts are
+  redacted and truncated before export.
 - `.env` and `.env.production` are excluded from version control and Docker
   build context.
 - The runtime image uses a non-root user.
 
 ### Not yet production-complete
 
-- No API-key rotation, expiration, self-service revocation, or administrative
+- No API-key expiration, self-service revocation, or administrative
   provisioning API
 - No server-side key pepper or managed key-management service
 - No application-managed encryption at rest
@@ -691,6 +695,7 @@ LLM-Gateway/
 │   │   ├── services/            # Policy and domain services
 │   │   └── use_cases/           # Complete request lifecycles
 │   ├── core/                    # Settings, IDs and structured logging
+│   ├── cli/                     # Safe operator tenant/API-key bootstrap
 │   ├── domain/                  # Provider, auth and usage types
 │   ├── infrastructure/
 │   │   ├── db/                  # SQLAlchemy and PostgreSQL adapters
@@ -702,11 +707,20 @@ LLM-Gateway/
 ├── tests/                       # Unit, contract and integration tests
 ├── scripts/
 │   ├── chaos/                   # Production failure-policy probes
+│   ├── demo/                    # Redacted concurrent demo tooling
+│   ├── dogfood/                 # Redacted run/reconciliation/summaries
 │   ├── preflight.py
 │   └── seed_user.py
+├── load/                        # SSE-aware Locust harness and pure helpers
+├── docs/
+│   ├── architecture.mmd         # Editable Mermaid architecture source
+│   ├── architecture.png         # README architecture export
+│   ├── deployment/              # Railway operator checklist
+│   └── evidence/                # Sanitized measured evidence/status
 ├── scratch/                     # Historical/manual development probes
 ├── nginx/                       # Streaming-aware reverse proxy
 ├── .github/workflows/ci.yml
+├── decisions.md
 ├── docker-compose.yml
 ├── docker-compose.production.yml
 └── Dockerfile
@@ -780,10 +794,14 @@ avoid duplicated work.
 
 ## Roadmap
 
-Near-term GatewayLLM work:
+Completed evidence milestones:
 
-- dogfood with real study and engineering queries
-- collect honest overhead, cost, failover, and reconciliation metrics
+- real-provider dogfood with reconciled cost/failover/latency metrics
+- editable architecture and a clean-room quick-start validation
+- redacted concurrent-demo, state-inspection, and SSE-aware load tooling
+
+Remaining production gates:
+
 - run the deferred load-test matrix
 - add production tenant/key administration
 - deploy and verify the public production path
@@ -803,9 +821,10 @@ welcome.
 Before opening a pull request:
 
 ```powershell
-uv run ruff check app tests scripts scratch
-uv run ruff format --check app tests scripts scratch
-uv run mypy app/domain app/application/ports app/application/services app/application/use_cases
+uv run ruff check app tests scripts scratch load
+uv run ruff format --check app tests scripts scratch load
+uv run mypy app
+uv run python -m compileall -q app tests scripts scratch load
 uv run alembic check
 uv run pytest tests -q
 ```

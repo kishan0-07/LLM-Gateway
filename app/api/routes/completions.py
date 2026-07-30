@@ -51,6 +51,12 @@ def _api_error(
 
 def _http_error_for_provider_error(exc: ProviderError) -> HTTPException:
     if exc.category != "invalid_request":
+        if exc.provider == "gateway":
+            return _api_error(
+                503,
+                "provider_unavailable",
+                "All configured providers are currently unavailable",
+            )
         return _api_error(
             502,
             "provider_unavailable",

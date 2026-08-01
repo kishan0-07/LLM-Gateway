@@ -4,18 +4,20 @@
 
 **Harness implemented and unit-tested; capacity stages intentionally not run.**
 
-The current worktree is uncommitted at the user's request and no isolated load
-environment has been deployed. The production service's current Railway
-ceiling is known (2 vCPU / 1 GB), but provider spend/quota, elevated test-only
-rate limits, connection ceilings, and an abort owner have not been approved.
-Throughput, safe-concurrency, or capacity numbers are therefore not claimed.
+At the time this evidence was created, the harness worktree was uncommitted at
+the user's request. The harness was later committed in `53f8f78` and is present
+in current green-CI main `7eed536`, but no isolated load environment has been
+deployed. The production service's current Railway ceiling is known (2 vCPU /
+1 GB), while provider spend/quota, elevated test-only rate limits, connection
+ceilings, and an abort owner have not been approved. Throughput,
+safe-concurrency, or capacity numbers are therefore not claimed.
 
 ## Harness verification
 
 | Field | Value |
 |---|---|
 | Repository base commit | `713f18b` |
-| Harness source state | uncommitted worktree |
+| Harness source state at evidence time | uncommitted worktree; later committed in `53f8f78` |
 | Locust version | `2.46.2` |
 | Focused test result | 30 passed |
 | Traffic mix | 80% non-stream / 20% stream |

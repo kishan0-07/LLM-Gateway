@@ -36,13 +36,16 @@ Current Railway references:
 - [Generate a public domain](https://docs.railway.com/networking/public-networking)
 - [Pre-deploy commands](https://docs.railway.com/deployments/pre-deploy-command)
 
-### Observed production snapshot — August 1, 2026
+### Observed production snapshot — August 1, 2026 (redeploy update at 17:33 UTC)
 
 | Item | Observed value | Result |
 |---|---|---|
 | Public gateway | <https://llm-gateway-7.up.railway.app> | Active |
-| Railway deployment | `8fc4e474-ef4a-4feb-83fc-87021def77be` | Active |
-| Application / CI / Railway SHA | `53f8f784b64578b91745849269f186223df2f45b` | Exact match |
+| Original authenticated-smoke deployment | `8fc4e474-ef4a-4feb-83fc-87021def77be` | Historical evidence retained |
+| Original authenticated-smoke SHA | `53f8f784b64578b91745849269f186223df2f45b` | Exact app/CI/Railway match at smoke time |
+| Current `origin/main` SHA | `7eed53633aea47bf80d3076d1748602e0764d51d` | Pushed |
+| Current CI | [run 30690883651](https://github.com/kishan0-07/LLM-Gateway/actions/runs/30690883651) | Passed |
+| Post-rotation redeploy | Current main redeployed; new Railway deployment ID not recorded in this repository | Operator reported |
 | Region / replicas | US West (`sfo`) / 1 | Verified |
 | Resource ceiling | 2 vCPU / 1 GB RAM | Verified |
 | Pre-deploy command | `alembic upgrade head` | Configured |
@@ -54,8 +57,10 @@ Current Railway references:
 | Redis public TCP proxy | Removed | Passed |
 | Live accounting probes | Two requests; both settled, zero hold, ledger parity and cost equality | Passed |
 | Langfuse | Two live traces matched PostgreSQL/log evidence; sanitized excerpts and allowlisted metadata only | Passed |
-| Controlled restart/redeploy | Not run during the read-only audit | Pending |
-| Temporary smoke-key rotation | Not run | Required |
+| Post-redeploy public recovery | `/health`, `/ready`, and `/openapi.json` returned HTTP 200 at 2026-08-01 17:33 UTC | Passed |
+| In-flight stream termination/drain | No stream was observed across termination | Pending |
+| Temporary smoke-key rotation | Rotation completed; credentials not reused during this documentation audit | Operator reported |
+| Old-key rejection / new-key auth / one-active-key proof | No secret-bearing probe was run during this documentation audit | Pending |
 
 The complete redacted results are in
 [`docs/evidence/final-smoke.md`](../evidence/final-smoke.md). Do not interpret
@@ -166,15 +171,16 @@ python -m app.cli.create_api_key \
   --expected-active-prefix sk-gw-abc123
 ```
 
-- [ ] The old key is rejected after rotation.
-- [ ] The new key authenticates successfully.
-- [ ] Exactly one active key remains.
+- [x] The guarded rotation command was completed by the operator.
+- [ ] Capture that the old key is rejected after rotation.
+- [ ] Capture that the new key authenticates successfully.
+- [ ] Capture that exactly one active key remains.
 - [ ] No raw key appears in logs, Langfuse, screenshots, or committed files.
 
 ## 6. Post-deploy proof
 
-- [ ] `/health` returns HTTP 200.
-- [ ] `/ready` returns HTTP 200 and therefore proves PostgreSQL and Redis
+- [x] `/health` returns HTTP 200 after the redeploy.
+- [x] `/ready` returns HTTP 200 after the redeploy and therefore proves PostgreSQL and Redis
       connectivity.
 - [ ] The live smoke matrix passes.
 - [ ] All-provider failure returns the standard 503 error contract.
@@ -185,8 +191,9 @@ python -m app.cli.create_api_key \
       metadata.
 - [ ] An in-flight stream receives SIGTERM and finalizes within the 50-second
       Uvicorn budget and 60-second Railway drain window.
-- [ ] A redeploy runs migrations before activation and the replacement instance
-      becomes ready.
+- [x] The replacement instance became publicly healthy/ready after the
+      controlled redeploy; `railway.json` still configures migrations as the
+      pre-deploy command.
 
 ### Live smoke commands
 

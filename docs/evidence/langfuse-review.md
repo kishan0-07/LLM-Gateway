@@ -2,6 +2,12 @@
 
 ## Railway deployment review — August 1, 2026
 
+The later smoke-key rotation and `7eed536` redeploy did not send authenticated
+traffic during the documentation audit, so no new post-rotation Langfuse trace
+is claimed here. The application implementation is unchanged from the earlier
+authenticated smoke; the observations below remain the trace-content evidence
+for that implementation.
+
 The deployed application reports `LANGFUSE_ENABLED=true` and exports to the JP
 Langfuse region. An authenticated Chrome review found both live smoke traces:
 

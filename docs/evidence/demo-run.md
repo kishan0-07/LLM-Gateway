@@ -2,14 +2,16 @@
 
 ## Evidence status
 
-**Local rehearsal passed; immutable release recording pending.**
+**Historical local rehearsal passed; release video recording remains pending.**
 
-The executable demo and probe changes are intentionally uncommitted at the
-user's request. Therefore this run is useful implementation evidence, but it is
-not presented as proof of an immutable shipping commit.
+At the time of this rehearsal, the executable demo and probe changes were
+intentionally uncommitted at the user's request. They were later committed in
+`53f8f78` and are present in current green-CI main `7eed536`. The measurements
+below remain local rehearsal evidence; the later commit does not retroactively
+turn them into hosted Railway measurements.
 
 - **Repository base commit:** `713f18b`
-- **Demo tooling state:** uncommitted worktree
+- **Demo tooling state at rehearsal:** uncommitted worktree; later committed in `53f8f78`
 - **Date:** 2026-07-30 (UTC and IST calendar date)
 - **Stack:** local development Compose, direct app port
 - **Base URL class:** loopback HTTP
@@ -77,8 +79,8 @@ preserved for review.
 
 ## Production-shaped lifecycle rehearsal
 
-The uncommitted worktree image `llm-gateway:ship` was also exercised behind
-local Nginx with private PostgreSQL/Redis container ports:
+At rehearsal time, the then-uncommitted worktree image `llm-gateway:ship` was
+also exercised behind local Nginx with private PostgreSQL/Redis container ports:
 
 - fresh-volume migration completed before app activation;
 - `/ready` returned `ready` through Nginx;
@@ -90,12 +92,13 @@ local Nginx with private PostgreSQL/Redis container ports:
 This validates the local packaging contract, not Railway networking or a
 deployed-SHA invariant.
 
-## Required release rerun
+## Remaining release-video rerun
 
-After the user reviews, commits, pushes, and receives green CI:
+The tooling is now committed, current main has green CI, and the project has
+been redeployed. Before publishing the release video:
 
-1. record the exact application/tooling commit SHA;
-2. build or deploy that exact SHA;
-3. rerun the concurrent demo and state probe;
-4. replace this rehearsal status with immutable image/deployment evidence;
-5. record only safe aggregate output and selected trace IDs.
+1. record the replacement Railway deployment ID/SHA;
+2. use the rotated demo key without exposing it on screen;
+3. rerun the concurrent demo and safe state probe against that deployment;
+4. record only safe aggregate output and selected trace IDs;
+5. add only the final hosted video link to the README.

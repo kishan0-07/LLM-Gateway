@@ -599,12 +599,19 @@ declared provider spend/quota, connection ceilings, and Railway plan. No
 - [`Load-test status`](docs/evidence/load-test.md)
 - [`Railway smoke status`](docs/evidence/final-smoke.md)
 
-The public Railway deployment was also verified against the exact green-CI
-commit. Health, readiness, invalid authentication, one non-stream request, one
-stream, and the corresponding `/stats/me` delta passed. Live PostgreSQL probes
-confirmed both reservations settled with zero hold, complete attempt-to-ledger
-accounting, and exact reservation/ledger cost equality. This is a smoke result,
-not a hosted-capacity claim.
+The original authenticated Railway smoke was verified against application SHA
+`53f8f78`: health, readiness, invalid authentication, one non-stream request,
+one stream, and the corresponding `/stats/me` delta passed. Live PostgreSQL
+probes confirmed both reservations settled with zero hold, complete
+attempt-to-ledger accounting, and exact reservation/ledger cost equality.
+
+After the exposed smoke key was rotated, the project was redeployed from
+`origin/main` SHA `7eed536` ([green CI run
+30690883651](https://github.com/kishan0-07/LLM-Gateway/actions/runs/30690883651)).
+That commit changes documentation only relative to the authenticated smoke
+application, and the post-redeploy `/health`, `/ready`, and `/openapi.json`
+checks returned HTTP 200. This is deployment-recovery evidence, not a new
+authenticated accounting smoke or hosted-capacity claim.
 
 ## Production-shaped Docker stack
 
@@ -690,9 +697,14 @@ docker compose `
 - PostgreSQL and Redis public TCP proxies were removed after verifying that the
   app uses their private `.railway.internal` hosts; `/health` and `/ready`
   remained green after each change
-- The temporary smoke key shared during deployment must be rotated
-- Live Langfuse trace-content review passed; controlled restart/redeploy
-  evidence remains pending
+- The temporary smoke key shared during deployment was rotated on August 1,
+  2026. This documentation update did not reuse either credential, so an
+  independently captured old-key `401`, new-key authentication, and
+  exactly-one-active-key database check remain pending.
+- Live Langfuse trace-content review passed. A controlled redeploy was completed
+  from green-CI commit `7eed536`, after which `/health`, `/ready`, and
+  `/openapi.json` all returned HTTP 200. An in-flight stream drain during
+  termination has not yet been captured.
 - No independent security audit or penetration test
 
 For a real deployment, use a managed secret store, TLS termination, encrypted
@@ -818,11 +830,16 @@ Completed evidence milestones:
   accounting probes
 - PostgreSQL and Redis restricted to Railway private networking, with health
   and readiness reverified after removing both public TCP proxies
+- exposed smoke key rotated through the guarded operator workflow
+- green-CI redeploy completed, followed by successful public health, readiness,
+  and OpenAPI recovery checks
 
 Remaining production gates:
 
-- rotate the temporary smoke key and verify revocation
-- complete a controlled restart/redeploy proof
+- capture old-key rejection, new-key authentication, and exactly-one-active-key
+  database evidence without exposing either secret
+- capture an in-flight stream finalizing inside the configured Railway/Uvicorn
+  shutdown window
 - run only the bounded load stages after spend, quota, rate-limit, resource, and
   abort conditions are declared
 - add production tenant/key administration

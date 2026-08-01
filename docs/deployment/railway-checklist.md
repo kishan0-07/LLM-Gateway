@@ -36,6 +36,36 @@ Current Railway references:
 - [Generate a public domain](https://docs.railway.com/networking/public-networking)
 - [Pre-deploy commands](https://docs.railway.com/deployments/pre-deploy-command)
 
+### Observed production snapshot — August 1, 2026
+
+| Item | Observed value | Result |
+|---|---|---|
+| Public gateway | <https://llm-gateway-7.up.railway.app> | Active |
+| Railway deployment | `8fc4e474-ef4a-4feb-83fc-87021def77be` | Active |
+| Application / CI / Railway SHA | `53f8f784b64578b91745849269f186223df2f45b` | Exact match |
+| Region / replicas | US West (`sfo`) / 1 | Verified |
+| Resource ceiling | 2 vCPU / 1 GB RAM | Verified |
+| Pre-deploy command | `alembic upgrade head` | Configured |
+| Live Alembic revision | `e7f4a2c91b60 (head)` | Verified |
+| Health and readiness | `/health` 200; `/ready` 200 | Passed |
+| Runtime PostgreSQL host | `postgres.railway.internal` | Private path in use |
+| Runtime Redis host | `redis.railway.internal` | Private path in use |
+| PostgreSQL public TCP proxy | Removed | Passed |
+| Redis public TCP proxy | Removed | Passed |
+| Live accounting probes | Two requests; both settled, zero hold, ledger parity and cost equality | Passed |
+| Langfuse | Two live traces matched PostgreSQL/log evidence; sanitized excerpts and allowlisted metadata only | Passed |
+| Controlled restart/redeploy | Not run during the read-only audit | Pending |
+| Temporary smoke-key rotation | Not run | Required |
+
+The complete redacted results are in
+[`docs/evidence/final-smoke.md`](../evidence/final-smoke.md). Do not interpret
+the passing smoke as a capacity or SLO result.
+
+> [!NOTE]
+> The application reaches both dependencies through Railway private DNS. The
+> unnecessary PostgreSQL and Redis public TCP proxies were removed on August 1,
+> 2026, and `/health` plus `/ready` remained green after each removal.
+
 ## 1. Project topology
 
 | Service | Source | Exposure |
@@ -45,8 +75,8 @@ Current Railway references:
 | Redis | Railway Redis template | Private network only |
 
 - [ ] All three services use the same Railway region.
-- [ ] PostgreSQL has no public domain or public TCP proxy.
-- [ ] Redis has no public domain or public TCP proxy.
+- [x] PostgreSQL has no public domain or public TCP proxy.
+- [x] Redis has no public domain or public TCP proxy.
 - [ ] Only GatewayLLM has a generated public domain.
 
 ## 2. Required GatewayLLM variables

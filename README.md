@@ -13,8 +13,9 @@
 
 **Layer 1 of an Adaptive LLM Inference Platform**
 
-**Deployment status:** local production shape verified ·
-[Railway live smoke pending](docs/evidence/final-smoke.md)
+**Deployment status:** [live on Railway](https://llm-gateway-7.up.railway.app) ·
+[core smoke and durable accounting verified](docs/evidence/final-smoke.md) ·
+production-hardening gates remain open
 
 [Quick start](#quick-start-for-forkers) ·
 [Architecture](#architecture) ·
@@ -598,6 +599,13 @@ declared provider spend/quota, connection ceilings, and Railway plan. No
 - [`Load-test status`](docs/evidence/load-test.md)
 - [`Railway smoke status`](docs/evidence/final-smoke.md)
 
+The public Railway deployment was also verified against the exact green-CI
+commit. Health, readiness, invalid authentication, one non-stream request, one
+stream, and the corresponding `/stats/me` delta passed. Live PostgreSQL probes
+confirmed both reservations settled with zero hold, complete attempt-to-ledger
+accounting, and exact reservation/ledger cost equality. This is a smoke result,
+not a hosted-capacity claim.
+
 ## Production-shaped Docker stack
 
 The production Compose file uses PostgreSQL and Redis without host ports,
@@ -677,7 +685,14 @@ docker compose `
 - No IP-, device-, or organization-level abuse controls
 - No formal prompt-injection or content-safety policy
 - No compliance-grade PII detection or configurable retention policy
-- No deployed TLS policy; TLS belongs at the production ingress
+- Railway-managed HTTPS is active, but there is no custom ingress, WAF, or
+  application-owned TLS hardening policy
+- PostgreSQL and Redis public TCP proxies were removed after verifying that the
+  app uses their private `.railway.internal` hosts; `/health` and `/ready`
+  remained green after each change
+- The temporary smoke key shared during deployment must be rotated
+- Live Langfuse trace-content review passed; controlled restart/redeploy
+  evidence remains pending
 - No independent security audit or penetration test
 
 For a real deployment, use a managed secret store, TLS termination, encrypted
@@ -799,12 +814,18 @@ Completed evidence milestones:
 - real-provider dogfood with reconciled cost/failover/latency metrics
 - editable architecture and a clean-room quick-start validation
 - redacted concurrent-demo, state-inspection, and SSE-aware load tooling
+- exact-SHA Railway deployment with public-path smoke and live PostgreSQL
+  accounting probes
+- PostgreSQL and Redis restricted to Railway private networking, with health
+  and readiness reverified after removing both public TCP proxies
 
 Remaining production gates:
 
-- run the deferred load-test matrix
+- rotate the temporary smoke key and verify revocation
+- complete a controlled restart/redeploy proof
+- run only the bounded load stages after spend, quota, rate-limit, resource, and
+  abort conditions are declared
 - add production tenant/key administration
-- deploy and verify the public production path
 
 GatewayLLM is Layer 1 of a larger planned system:
 

@@ -1,5 +1,23 @@
 # Langfuse Review
 
+## Railway deployment review — August 1, 2026
+
+The deployed application reports `LANGFUSE_ENABLED=true` and exports to the JP
+Langfuse region. An authenticated Chrome review found both live smoke traces:
+
+| Trace ID | Event | Request / attempt | Provider/model | Cost | Result |
+|---|---|---:|---|---:|---|
+| `dogfood-railway-sync-625f7aef184b4ff798df642fb03f4d7b` | `request_completed` | 26 / 40 | Groq / `openai/gpt-oss-20b` | `$0.000030` | `success`, reconciliation `none` |
+| `dogfood-railway-stream-e8d5091849bf43959393a883fac14243` | `stream_completed` | 27 / 41 | Groq / `openai/gpt-oss-20b` | `$0.000038` | `success`, reconciliation `none` |
+
+The request IDs, attempt IDs, provider/model, outcome, usage source, costs, and
+reconciliation states match the PostgreSQL probes and Railway logs. Langfuse
+contains only `prompt_excerpt`, `response_excerpt`, and the documented metadata
+fields. The two intentionally harmless smoke prompts contain no PII. No gateway
+API key, provider secret, database URL, Redis URL, authorization header, or raw
+provider error is present. Langfuse's own public ingestion-key and OpenTelemetry
+resource attributes are platform metadata, not gateway secrets.
+
 - Reviewed implementation commit SHA: `99c27c247eb21bea65d8ac0a84d9eca2c5e5e96e`
 - Evidence-collection base SHA: `56e9852f7971b5ea9b5a213b6cbe5fc585b0adc3`
 - Collection state: WP4-remediated worktree subsequently finalized in the

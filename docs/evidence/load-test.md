@@ -4,10 +4,11 @@
 
 **Harness implemented and unit-tested; capacity stages intentionally not run.**
 
-The current worktree is uncommitted at the user's request, no isolated load
-environment has been deployed, and provider spend/quota plus Railway resource
-limits have not been approved. Throughput, safe-concurrency, or capacity
-numbers are therefore not claimed.
+The current worktree is uncommitted at the user's request and no isolated load
+environment has been deployed. The production service's current Railway
+ceiling is known (2 vCPU / 1 GB), but provider spend/quota, elevated test-only
+rate limits, connection ceilings, and an abort owner have not been approved.
+Throughput, safe-concurrency, or capacity numbers are therefore not claimed.
 
 ## Harness verification
 
@@ -51,8 +52,9 @@ Before a positive-capacity run, the operator must declare:
 - Railway CPU/memory plan;
 - named abort owner.
 
-None of these production controls has been confirmed in this worktree, so even
-the five-user stage would not be publishable evidence yet.
+Only the current Railway CPU/memory ceiling has been confirmed. The remaining
+controls are absent, and the live public service is not an isolated load
+environment, so even the five-user stage would not be publishable evidence yet.
 
 ## Planned bounded stages
 

@@ -17,6 +17,8 @@
 [core smoke and durable accounting verified](docs/evidence/final-smoke.md) ·
 production-hardening gates remain open
 
+▶️ [Watch the GatewayLLM architecture and live demonstration](https://www.youtube.com/watch?v=hRXCLrcRP8c)
+
 [Quick start](#quick-start-for-forkers) ·
 [Architecture](#architecture) ·
 [API reference](#api-reference) ·
